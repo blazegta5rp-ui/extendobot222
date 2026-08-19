@@ -15,8 +15,8 @@ TOKEN = os.getenv("TOKEN")
 
 GUILD_ID = 1375220511209947257
 
-BANNER_URL = "https://ссылка_на_баннер_прохоровы.png"      # большой баннер внизу
-THUMBNAIL_URL = "https://ссылка_на_лого_прохоровы.png"     # герб справа
+BANNER_URL = "https://cdn.discordapp.com/attachments/1538665847059513467/1539759240812564480/1231231.png?ex=6a877c0a&is=6a862a8a&hm=8453e8289912e711346558d382ca8fff8a4c4d1a8edf8ae38fd1359b9bcea513&"      # большой баннер внизу
+THUMBNAIL_URL = "https://cdn.discordapp.com/attachments/1538665847059513467/1539759400770732052/2222222.png?ex=6a877c30&is=6a862ab0&hm=bfac6bcaf5245431808b432f01b79ef76895598121e4ddd9f279df97f6c76f62&"     # герб справа
 
 EMBED_COLOR = 0xC0C0C0  # серебристый под герб (можно 0xB11226 для красного)
 
