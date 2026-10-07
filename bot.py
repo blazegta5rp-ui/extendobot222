@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # ============================================================================
-#  БОТ ЗАЯВОК — СЕМЬЯ ПРОХОРОВЫ  —  discord.py
+#  БОТ ЗАЯВОК — EXTENDO RP + EXTENDO VZP  —  discord.py
 # ============================================================================
 
 import os
@@ -11,29 +11,43 @@ from discord import app_commands
 #  ОБЩИЕ НАСТРОЙКИ
 # ============================================================================
 
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("TOKEN")  # токен задаётся в переменных окружения на хостинге
 
 GUILD_ID = 1375220511209947257
 
-BANNER_URL = "https://cdn.discordapp.com/attachments/1538665847059513467/1539759240812564480/1231231.png?ex=6a877c0a&is=6a862a8a&hm=8453e8289912e711346558d382ca8fff8a4c4d1a8edf8ae38fd1359b9bcea513&"      # большой баннер внизу
-THUMBNAIL_URL = "https://cdn.discordapp.com/attachments/1538665847059513467/1539759400770732052/2222222.png?ex=6a877c30&is=6a862ab0&hm=bfac6bcaf5245431808b432f01b79ef76895598121e4ddd9f279df97f6c76f62&"     # герб справа
+# Пока одна и та же картинка на лого и баннер — прислать отдельный баннер позже
+_IMG = "https://cdn.discordapp.com/attachments/1495058968278728836/1557372303090917391/telegram-cloud-photo-size-4-6012660718269828483-y.jpg?backend=b2&ex=6ac78f7b&is=6ac63dfb&hm=1d979ba6036c92f3b8b2deb68c6c41c68459ce0c74c0b8a86f209d984a166f15&"
+BANNER_URL = _IMG
+THUMBNAIL_URL = _IMG
 
-EMBED_COLOR = 0xC0C0C0  # серебристый под герб (можно 0xB11226 для красного)
+EMBED_COLOR = 0xB11226  # красный
 
 # ----------------------------------------------------------------------------
-#  КОНФИГ СЕМЬИ
+#  КОНФИГ СЕМЕЙ
 # ----------------------------------------------------------------------------
 FAMILIES = {
-    "prohorovy": {
-        "name": "Прохоровы",
-        "panel_command": "панель",
-        "panel_title": "👑 Вступление в семью Прохоровы 🇷🇺",
-        "submit_channel_id": 1538665847059513471,     # где висит кнопка
-        "logs_channel_id": 1538665847260708998,        # куда падают заявки
-        "accepted_role_id": 1539721211418775582,       # роль принятому
-        "recruiter_role_ids": [1539721362854252574, 1539720792974164038],  # рекрут + глава
-        "panel_role_ids": [1539720792974164038],       # кто может выкладывать /панель (глава)
-        "call_voice_channel_id": 1538665847059513473,  # войс-приёмная для обзвона
+    "extendo": {
+        "name": "EXTENDO",
+        "panel_title": "🩸 Вступление в семью EXTENDO",
+        "submit_channel_id": 1494355176260112394,
+        "logs_channel_id": 1497713478314623077,
+        "accepted_role_id": 1533198229158494360,   # academy (по умолчанию)
+        "family_role_id": 1524756881472622674,      # family (второй вариант, выбор кнопкой)
+        "recruiter_role_ids": [1524757394955960511, 1513509436600090644,
+                               1513294574007615518, 701066783498698813],
+        "panel_role_ids": [1513294574007615518],    # head recruit — выкладывает панель
+        "call_voice_channel_id": 1510082641762717696,  # приёмная (куда даём доступ)
+    },
+    "vzp": {
+        "name": "EXTENDO VZP",
+        "panel_title": "🩸 Вступление в семью EXTENDO VZP",
+        "submit_channel_id": 1513633675277897809,
+        "logs_channel_id": 1513633996041355264,
+        "accepted_role_id": 1512956758719467591,   # взп роль
+        "recruiter_role_ids": [1510102054696259654, 1513510003607212062,
+                               701066783498698813],
+        "panel_role_ids": [1513510003607212062],    # head vzp — выкладывает панель
+        "call_voice_channel_id": 1510082641762717696,  # приёмная
     },
 }
 
@@ -51,7 +65,7 @@ BUTTON_LABEL = "📝 Подать заявку"
 MODAL_TITLE = "Заявка на вступление в семью"
 
 WELCOME_DESC = (
-    "👑 Добро пожаловать! Здесь начинается твой путь в семью **{name}** 🇷🇺\n\n"
+    "Добро пожаловать! Здесь начинается твой путь в семью **{name}**.\n\n"
     "📌 **Как это работает:**\n"
     "▸ Нажми кнопку ниже и честно заполни анкету.\n"
     "▸ Если заявка проходит первичный отбор — тебя вызовут на **обзвон** "
@@ -109,16 +123,16 @@ def _has_any_role(member, role_ids):
     return any(rid in have for rid in role_ids)
 
 
-def member_can_review(member, family_key) -> bool:
+def member_can_review(member, family_key):
     return _has_any_role(member, FAMILIES[family_key]["recruiter_role_ids"])
 
 
-def member_can_panel(member, family_key) -> bool:
+def member_can_panel(member, family_key):
     return _has_any_role(member, FAMILIES[family_key]["panel_role_ids"])
 
 
 # ----------------------------------------------------------------------------
-#  АНКЕТА (модалка кандидата)
+#  АНКЕТА
 # ----------------------------------------------------------------------------
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, family_key):
@@ -149,7 +163,7 @@ class ApplicationModal(discord.ui.Modal):
         embed.add_field(name=f"👪 {Q2_LABEL}", value=self.a2.value, inline=False)
         embed.add_field(name=f"🎮 {Q3_LABEL}", value=self.a3.value, inline=False)
         embed.add_field(name=f"🔫 {Q4_LABEL}", value=self.a4.value, inline=False)
-        embed.add_field(name="\u200b", value=f"Кандидат: {interaction.user.mention}", inline=False)
+        embed.add_field(name="​", value=f"Кандидат: {interaction.user.mention}", inline=False)
         embed.set_footer(text=f"ID кандидата: {interaction.user.id}")
 
         view = discord.ui.View(timeout=None)
@@ -201,42 +215,21 @@ class ApprovalModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         fam = FAMILIES[self.family_key]
-        guild = interaction.guild
-        member = guild.get_member(self.applicant_id)
-        role = guild.get_role(fam["accepted_role_id"])
-        warns = []
-
-        if member and role:
-            try:
-                await member.add_roles(role, reason=f"Принят в {fam['name']}")
-            except discord.Forbidden:
-                warns.append("не смог выдать роль (проверь иерархию ролей бота)")
-        if member:
-            try:
-                await member.edit(nick=self.full_name.value, reason="Принят в семью")
-            except discord.Forbidden:
-                warns.append("не смог сменить ник (нужно право 'Управлять никнеймами' и роль бота выше)")
-            try:
-                await member.send(ACCEPT_DM.format(name=fam["name"]))
-            except discord.Forbidden:
-                pass
-
-        try:
-            embed = self.source_message.embeds[0]
-            embed.title = f"✅ ОДОБРЕНА — {fam['name']}"
-            embed.color = 0x2ECC71
-            embed.add_field(name="✅ Рассмотрел", value=interaction.user.mention, inline=False)
-            embed.add_field(name="🆔 Discord ID", value=self.discord_id.value, inline=True)
-            embed.add_field(name="🎫 Static ID", value=self.static_id.value, inline=True)
-            embed.add_field(name="📝 Имя Фамилия", value=self.full_name.value, inline=True)
-            await self.source_message.edit(embed=embed, view=None)
-        except Exception:
-            pass
-
-        note = ("\n⚠️ " + "; ".join(warns)) if warns else ""
-        await interaction.response.send_message(
-            f"Кандидат принят в {fam['name']} ({interaction.user.mention}).{note}",
-            ephemeral=True)
+        # Если у семьи есть выбор ролей (RP: academy/family) — показываем кнопки выбора
+        if fam.get("family_role_id"):
+            await interaction.response.send_message(
+                "Какую роль выдать кандидату?",
+                view=RoleChoiceView(self.family_key, self.applicant_id,
+                                    self.source_message, self.discord_id.value,
+                                    self.static_id.value, self.full_name.value,
+                                    interaction.user.id),
+                ephemeral=True)
+            return
+        # Иначе (VZP) — сразу выдаём единственную роль
+        await finalize_accept(interaction, self.family_key, self.applicant_id,
+                              self.source_message, self.discord_id.value,
+                              self.static_id.value, self.full_name.value,
+                              fam["accepted_role_id"], interaction.user)
 
 
 # ----------------------------------------------------------------------------
@@ -272,6 +265,95 @@ class DeclineModal(discord.ui.Modal):
             pass
         await interaction.response.send_message(
             f"Заявка отклонена ({interaction.user.mention}).", ephemeral=True)
+
+
+# ----------------------------------------------------------------------------
+#  ОБЩАЯ ФУНКЦИЯ: выдать роль + ник + ЛС + обновить лог
+# ----------------------------------------------------------------------------
+async def finalize_accept(interaction, family_key, applicant_id, source_message,
+                          discord_id, static_id, full_name, role_id, reviewer):
+    fam = FAMILIES[family_key]
+    guild = interaction.guild
+    member = guild.get_member(applicant_id)
+    role = guild.get_role(role_id)
+    warns = []
+
+    if member and role:
+        try:
+            await member.add_roles(role, reason=f"Принят в {fam['name']}")
+        except discord.Forbidden:
+            warns.append("не смог выдать роль (проверь иерархию ролей бота)")
+    if member:
+        try:
+            await member.edit(nick=full_name, reason="Принят в семью")
+        except discord.Forbidden:
+            warns.append("не смог сменить ник (нужно право 'Управлять никнеймами' и роль бота выше)")
+        try:
+            await member.send(ACCEPT_DM.format(name=fam["name"]))
+        except discord.Forbidden:
+            pass
+
+    role_name = role.name if role else "—"
+    try:
+        embed = source_message.embeds[0]
+        embed.title = f"✅ ОДОБРЕНА — {fam['name']}"
+        embed.color = 0x2ECC71
+        embed.add_field(name="✅ Рассмотрел", value=reviewer.mention, inline=False)
+        embed.add_field(name="🎖 Выдана роль", value=role_name, inline=False)
+        embed.add_field(name="🆔 Discord ID", value=discord_id, inline=True)
+        embed.add_field(name="🎫 Static ID", value=static_id, inline=True)
+        embed.add_field(name="📝 Имя Фамилия", value=full_name, inline=True)
+        await source_message.edit(embed=embed, view=None)
+    except Exception:
+        pass
+
+    note = ("\n⚠️ " + "; ".join(warns)) if warns else ""
+    msg = f"Кандидат принят в {fam['name']}, выдана роль **{role_name}**.{note}"
+    # отвечаем правильным способом (ещё не отвечали или уже da)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        pass
+
+
+# ----------------------------------------------------------------------------
+#  ВЫБОР РОЛИ (RP: academy / family) — кнопки для рекрутера
+# ----------------------------------------------------------------------------
+class RoleChoiceView(discord.ui.View):
+    def __init__(self, family_key, applicant_id, source_message,
+                 discord_id, static_id, full_name, reviewer_id):
+        super().__init__(timeout=300)
+        self.family_key = family_key
+        self.applicant_id = applicant_id
+        self.source_message = source_message
+        self.discord_id = discord_id
+        self.static_id = static_id
+        self.full_name = full_name
+        self.reviewer_id = reviewer_id
+
+    async def _finish(self, interaction, role_id):
+        fam = FAMILIES[self.family_key]
+        await finalize_accept(interaction, self.family_key, self.applicant_id,
+                              self.source_message, self.discord_id, self.static_id,
+                              self.full_name, role_id, interaction.user)
+        # гасим кнопки выбора
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.edit_original_response(view=self)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="🎓 Academy", style=discord.ButtonStyle.primary)
+    async def academy(self, interaction, button):
+        await self._finish(interaction, FAMILIES[self.family_key]["accepted_role_id"])
+
+    @discord.ui.button(label="👑 Family", style=discord.ButtonStyle.success)
+    async def family(self, interaction, button):
+        await self._finish(interaction, FAMILIES[self.family_key]["family_role_id"])
 
 
 # ----------------------------------------------------------------------------
@@ -389,14 +471,12 @@ class DeclineButton(discord.ui.DynamicItem[discord.ui.Button],
 
 
 # ----------------------------------------------------------------------------
-#  КОМАНДА ПАНЕЛИ
+#  КОМАНДЫ ПАНЕЛИ
 # ----------------------------------------------------------------------------
-@bot.tree.command(name="панель", description="Выложить панель заявок (Прохоровы)")
-async def panel(interaction: discord.Interaction):
-    family_key = "prohorovy"
+async def post_panel(interaction: discord.Interaction, family_key: str):
     if not member_can_panel(interaction.user, family_key):
         await interaction.response.send_message(
-            "⛔ У тебя нет прав выкладывать панель (нужна роль главы семьи).", ephemeral=True)
+            "⛔ У тебя нет прав выкладывать эту панель.", ephemeral=True)
         return
     fam = FAMILIES[family_key]
     embed = discord.Embed(title=fam["panel_title"],
@@ -418,9 +498,19 @@ async def panel(interaction: discord.Interaction):
             ephemeral=True)
 
 
+@bot.tree.command(name="панель", description="Выложить панель заявок EXTENDO")
+async def panel_extendo(interaction: discord.Interaction):
+    await post_panel(interaction, "extendo")
+
+
+@bot.tree.command(name="панель_vzp", description="Выложить панель заявок EXTENDO VZP")
+async def panel_vzp(interaction: discord.Interaction):
+    await post_panel(interaction, "vzp")
+
+
 @bot.event
 async def on_ready():
-    print(f"=== ПРОХОРОВЫ BOT v1 === запущен как {bot.user}")
+    print(f"=== EXTENDO RP+VZP BOT v11 === запущен как {bot.user}")
 
 
 if not TOKEN:
