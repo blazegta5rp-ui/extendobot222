@@ -81,13 +81,26 @@ AFK_CHANNEL_ID = 996802856948617326  # афк-войс (монеты не кап
 
 # товары магазина — добавляй/меняй как нужно
 SHOP_ITEMS = [
-    {"id": "role_custom", "name": "Кастомная роль", "price": 1000,
-     "desc": "Своя роль с выбранным цветом и названием"},
-    {"id": "money_250k", "name": "250.000 виртов", "price": 175,
-     "desc": "Игровая валюта"},
-    {"id": "clothes", "name": "Одежда (комплект)", "price": 300,
-     "desc": "Кастомный шмот"},
+    # 🎮 В ИГРЕ (дёшево → дорого)
+    {"id": "bag100k",   "cat": "game", "name": "Большая сумка за 100.000$", "price": 40,  "stock": None, "desc": "Вместительная сумка"},
+    {"id": "ch100k",    "cat": "game", "name": "100.000$ Chilliad",          "price": 50,  "stock": None, "desc": "Игровая валюта Chilliad"},
+    {"id": "role",      "cat": "game", "name": "ЛЮБАЯ кастомная роль",       "price": 100, "stock": None, "desc": "Своя роль с цветом и названием"},
+    {"id": "ch250k",    "cat": "game", "name": "250.000 Chilliad",           "price": 125, "stock": None, "desc": "Игровая валюта Chilliad"},
+    {"id": "ch500k",    "cat": "game", "name": "500.000 Chilliad",           "price": 250, "stock": None, "desc": "Игровая валюта Chilliad"},
+    {"id": "ch1kk",     "cat": "game", "name": "1.000.000$ Chilliad",        "price": 450, "stock": None, "desc": "Игровая валюта Chilliad"},
+    # 💵 В ЖИЗНЬ (дёшево → дорого)
+    {"id": "rub5000",   "cat": "irl",  "name": "5.000 рублей",               "price": 1000, "stock": None, "desc": "Перевод 5.000 ₽"},
+    {"id": "mouse",     "cat": "irl",  "name": "Мышка Lunacy One",           "price": 1000, "stock": 1,    "desc": "Игровая мышь"},
+    {"id": "keyboard",  "cat": "irl",  "name": "Клавиатура Aula F75",        "price": 1000, "stock": 1,    "desc": "Механическая клавиатура"},
+    {"id": "headset",   "cat": "irl",  "name": "Наушники Logitech G435",     "price": 1000, "stock": 1,    "desc": "Игровая гарнитура"},
+    {"id": "monitor",   "cat": "irl",  "name": "Монитор 240hz 2K",           "price": 2000, "stock": 1,    "desc": "Игровой монитор 240 Гц 2K"},
 ]
+
+ECONOMY_INFO = (
+    "💠 **Как заработать {cur}:**\n"
+    "┣ 🎙 1 час в войсе (не в муте) — **1** монета\n"
+    "┗ 👥 1 принятый рекрутом — **10** монет"
+)
 
 MSK = datetime.timezone(datetime.timedelta(hours=3))
 DATA_FILE = "data.json"
@@ -142,6 +155,11 @@ def load_data():
             pass
     _data.setdefault("users", {})
     _data.setdefault("last_weekly", "")
+    _data.setdefault("stock", {})
+    # инициализация остатков из SHOP_ITEMS (если ещё нет)
+    for it in SHOP_ITEMS:
+        if it.get("stock") is not None and it["id"] not in _data["stock"]:
+            _data["stock"][it["id"]] = it["stock"]
 
 
 def save_data():
@@ -225,8 +243,39 @@ def member_can_panel(member, family_key):
     return _has_any_role(member, FAMILIES[family_key]["panel_role_ids"])
 
 
+async def log_coins(member, amount, balance, reason):
+    if not GIVE_LOG_CHANNEL_ID:
+        return
+    ch = bot.get_channel(GIVE_LOG_CHANNEL_ID)
+    if not ch:
+        return
+    emb = discord.Embed(color=EMBED_COLOR, timestamp=datetime.datetime.now(MSK))
+    emb.description = (f"{member.mention} получил **+{amount} {CURRENCY_EMOJI}**\n"
+                      f"💰 Баланс: **{balance:,}".replace(",", " ") + f" {CURRENCY_EMOJI}**\n"
+                      f"📌 {reason}")
+    emb.set_footer(text=FOOTER_TEXT,
+                   icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+    try:
+        await ch.send(embed=emb)
+    except Exception:
+        pass
+
+
 def fmt_coins(n):
     return f"{n:,}".replace(",", " ") + f" {CURRENCY_EMOJI}"
+
+
+def item_stock(item):
+    if item.get("stock") is None:
+        return None  # безлимит
+    return _data.get("stock", {}).get(item["id"], item["stock"])
+
+
+def stock_label(item):
+    s = item_stock(item)
+    if s is None:
+        return "∞"
+    return f"{s} шт." if s > 0 else "нет в наличии"
 
 
 def fmt_voice(sec):
@@ -375,6 +424,8 @@ async def finalize_accept(interaction, family_key, applicant_id, source_message,
 
     # === ЭКОНОМИКА: рекрутер получает монеты + счётчик принятых ===
     add_accept(reviewer.id)
+    await log_coins(reviewer, COINS_PER_ACCEPT, u(reviewer.id)["balance"],
+                    f"Принят игрок в {fam['name']}")
 
     role_name = role.name if role else "—"
     try:
@@ -730,7 +781,7 @@ async def voice_digest_loop():
         voice_hour_earn.clear()
         return
     rows = sorted(voice_hour_earn.items(), key=lambda kv: kv[1], reverse=True)
-    lines = [f"<@{uid}> — +{fmt_coins(c)}" for uid, c in rows[:25]]
+    lines = [f"<@{uid}> — +{fmt_coins(c)} · баланс {fmt_coins(u(uid)['balance'])}" for uid, c in rows[:25]]
     emb = discord.Embed(title="🎙 Начисления за войсы (за сутки)", color=EMBED_COLOR,
                         description="\n".join(lines),
                         timestamp=datetime.datetime.now(MSK))
@@ -751,14 +802,32 @@ async def _before_digest():
 #  ===== МАГАЗИН =====
 # ============================================================================
 def shop_embed():
-    embed = discord.Embed(title="🛒 Магазин EXTENDO", color=EMBED_COLOR,
-                          description="Покупки за монеты. Нажми **«Купить»** → выбери товар.\n"
-                                      "**«Мой баланс»** — сколько у тебя монет.")
+    embed = discord.Embed(
+        title="🛒  МАГАЗИН  ·  EXTENDO × BANHAMMER",
+        color=EMBED_COLOR,
+        description=(
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Валюта: **{CURRENCY_NAME}** {CURRENCY_EMOJI}  ·  Нажми **🛒 Купить**\n"
+            + ECONOMY_INFO.format(cur=CURRENCY_NAME) + "\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ))
     if THUMBNAIL_URL.startswith("http"):
         embed.set_thumbnail(url=THUMBNAIL_URL)
-    for it in SHOP_ITEMS:
-        embed.add_field(name=f"{it['name']} — {fmt_coins(it['price'])}",
-                        value=it.get("desc", "​"), inline=False)
+    if BANNER_URL.startswith("http"):
+        embed.set_image(url=BANNER_URL)
+
+    cats = [("game", "🎮  В ИГРЕ"), ("irl", "💵  В ЖИЗНЬ")]
+    for cat_key, cat_title in cats:
+        lines = []
+        for it in SHOP_ITEMS:
+            if it["cat"] != cat_key:
+                continue
+            lines.append(f"**{it['name']}**\n╰ 💰 `{it['price']} {CURRENCY_NAME}`  ·  📦 {stock_label(it)}")
+        if lines:
+            embed.add_field(name=f"▰▰▰  {cat_title}  ▰▰▰",
+                            value="\n\n".join(lines), inline=False)
+    embed.set_footer(text=FOOTER_TEXT,
+                     icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
     return embed
 
 
@@ -780,32 +849,45 @@ class ShopView(discord.ui.View):
 
 class BuySelect(discord.ui.Select):
     def __init__(self):
-        options = [discord.SelectOption(label=it["name"],
-                                        description=f"{it['price']} {CURRENCY_NAME}",
-                                        value=it["id"]) for it in SHOP_ITEMS]
-        super().__init__(placeholder="Выбери товар…", options=options)
+        options = []
+        for it in SHOP_ITEMS:
+            emoji = "🎮" if it["cat"] == "game" else "💵"
+            options.append(discord.SelectOption(
+                label=f"{it['name']} — {it['price']} {CURRENCY_NAME}"[:100],
+                description=f"📦 {stock_label(it)}",
+                value=it["id"], emoji=emoji))
+        super().__init__(placeholder="Выбери товар…", options=options[:25])
 
     async def callback(self, interaction: discord.Interaction):
         item = next((i for i in SHOP_ITEMS if i["id"] == self.values[0]), None)
         if not item:
             await interaction.response.send_message("Товар не найден.", ephemeral=True)
             return
+        # проверка остатка
+        stock = item_stock(item)
+        if stock is not None and stock <= 0:
+            await interaction.response.send_message(
+                f"❌ **{item['name']}** закончился (нет в наличии).", ephemeral=True)
+            return
         user = u(interaction.user.id)
         if user["balance"] < item["price"]:
             await interaction.response.send_message(
-                f"❌ Недостаточно монет. Нужно {fmt_coins(item['price'])}, "
+                f"❌ Недостаточно монет.\nНужно {fmt_coins(item['price'])}, "
                 f"у тебя {fmt_coins(user['balance'])}.", ephemeral=True)
             return
-        # списываем
+        # списываем баланс + склад
         user["balance"] -= item["price"]
+        if stock is not None:
+            _data["stock"][item["id"]] = stock - 1
         save_data()
         # создаём тикет
         ticket = await create_purchase_ticket(interaction, item)
         link = ticket.mention if ticket else "(тикет не создан — проверь категорию)"
         await interaction.response.send_message(
-            f"✅ Покупка **{item['name']}** за {fmt_coins(item['price'])} оформлена!\n"
-            f"Создан тикет: {link}", ephemeral=True)
-        # уведомляем персонал
+            f"✅ Покупка оформлена!\n"
+            f"🛒 **{item['name']}** за {fmt_coins(item['price'])}\n"
+            f"💰 Остаток баланса: {fmt_coins(user['balance'])}\n"
+            f"🧾 Тикет: {link}", ephemeral=True)
         await notify_purchase(interaction, item, ticket)
 
 
@@ -885,16 +967,16 @@ async def shop_cmd(interaction: discord.Interaction):
 # ============================================================================
 @bot.event
 async def on_ready():
-    print(f"=== EXTENDO BOT v12.1 (экономика+магазин+дизайн) === запущен как {bot.user}")
+    if not voice_earn_loop.is_running():
+        voice_earn_loop.start()
+    if not weekly_loop.is_running():
+        weekly_loop.start()
+    if not voice_digest_loop.is_running():
+        voice_digest_loop.start()
+    print(f"=== EXTENDO BOT v13.1 === запущен как {bot.user}")
 
 
 load_data()
-if not voice_earn_loop.is_running():
-    voice_earn_loop.start()
-if not weekly_loop.is_running():
-    weekly_loop.start()
-if not voice_digest_loop.is_running():
-    voice_digest_loop.start()
 
 if not TOKEN:
     raise RuntimeError("Не задан TOKEN. Добавь переменную окружения TOKEN на хостинге.")
