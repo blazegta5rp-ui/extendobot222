@@ -56,9 +56,9 @@ FAMILIES = {
 #  КОНФИГ ЭКОНОМИКИ / МАГАЗИНА  — ⚠️ ЗАПОЛНИ 0 И [] СВОИМИ ID
 # ============================================================================
 
-CURRENCY_NAME = "BHC"          # BANHAMMER COIN
+CURRENCY_NAME = "Extendo Coins"   # игровая валюта
 CURRENCY_EMOJI = "🪙"
-FOOTER_TEXT = "EXTENDO × BANHAMMER FAMILY"
+FOOTER_TEXT = "EXTENDO FAMILY"
 COINS_PER_ACCEPT = 10          # коинов рекрутеру за каждого принятого в семью
 COINS_PER_VOICE_MINUTE = 1     # коинов за каждую минуту в голосовом
 
@@ -211,6 +211,7 @@ class FamilyBot(discord.Client):
     async def setup_hook(self):
         self.add_dynamic_items(ApplyButton, AcceptButton, CallButton, DeclineButton)
         self.add_view(ShopView())
+        self.add_view(GiveView())
         try:
             synced = await self.tree.sync()
             print(f"Синхронизировано команд: {len(synced)}")
@@ -717,6 +718,8 @@ def build_top_embed(weekly=False):
     embed.add_field(name="🎙  ТОП ПО ВРЕМЕНИ В ВОЙСАХ", value="\n".join(voice_lines) or "—", inline=False)
     if THUMBNAIL_URL.startswith("http"):
         embed.set_thumbnail(url=THUMBNAIL_URL)
+    if BANNER_URL.startswith("http"):
+        embed.set_image(url=BANNER_URL)
     embed.set_footer(text=FOOTER_TEXT,
                      icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
     return embed
@@ -803,7 +806,7 @@ async def _before_digest():
 # ============================================================================
 def shop_embed():
     embed = discord.Embed(
-        title="🛒  МАГАЗИН  ·  EXTENDO × BANHAMMER",
+        title="🛒  МАГАЗИН  ·  EXTENDO FAMILY",
         color=EMBED_COLOR,
         description=(
             "━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -948,6 +951,133 @@ async def notify_purchase(interaction, item, ticket):
             pass
 
 
+# ============================================================================
+#  ===== ПАНЕЛЬ ВЫДАЧИ МОНЕТ (кнопки) =====
+# ============================================================================
+def resolve_member(guild, raw):
+    raw = raw.strip().replace("<@", "").replace("!", "").replace(">", "")
+    if raw.isdigit():
+        return guild.get_member(int(raw))
+    return None
+
+
+class GiveModal(discord.ui.Modal):
+    def __init__(self, mode):
+        self.mode = mode  # "add" / "take"
+        title = "Выдать монеты" if mode == "add" else "Забрать монеты"
+        super().__init__(title=title)
+        self.target = discord.ui.TextInput(
+            label="Кому (ID или @упоминание)", placeholder="например: 123456789 или @ник",
+            max_length=60)
+        self.amount = discord.ui.TextInput(label="Сколько монет", placeholder="например: 500", max_length=12)
+        self.reason = discord.ui.TextInput(label="Причина", style=discord.TextStyle.paragraph, max_length=300)
+        for it in (self.target, self.amount, self.reason):
+            self.add_item(it)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        member = resolve_member(interaction.guild, self.target.value)
+        if not member:
+            await interaction.response.send_message(
+                "⚠️ Участник не найден. Укажи ID или @упоминание.", ephemeral=True)
+            return
+        try:
+            amount = int(self.amount.value.strip().replace(" ", ""))
+        except ValueError:
+            await interaction.response.send_message("⚠️ Сумма должна быть числом.", ephemeral=True)
+            return
+        if amount <= 0:
+            await interaction.response.send_message("⚠️ Сумма должна быть больше 0.", ephemeral=True)
+            return
+
+        delta = amount if self.mode == "add" else -amount
+        add_balance(member.id, delta)
+        new_bal = u(member.id)["balance"]
+        sign = "➕ Выдано" if self.mode == "add" else "➖ Забрано"
+
+        await interaction.response.send_message(
+            f"✅ {sign} **{fmt_coins(amount)}** → {member.mention}\n"
+            f"💰 Баланс теперь: {fmt_coins(new_bal)}\n📌 {self.reason.value}", ephemeral=True)
+
+        # лог
+        if GIVE_LOG_CHANNEL_ID:
+            ch = bot.get_channel(GIVE_LOG_CHANNEL_ID)
+            if ch:
+                color = 0x2ECC71 if self.mode == "add" else 0xE74C3C
+                emb = discord.Embed(title=f"{sign} монеты", color=color,
+                                    timestamp=datetime.datetime.now(MSK))
+                if THUMBNAIL_URL.startswith("http"):
+                    emb.set_thumbnail(url=THUMBNAIL_URL)
+                emb.add_field(name="Кому", value=member.mention, inline=True)
+                emb.add_field(name="Сумма", value=fmt_coins(amount), inline=True)
+                emb.add_field(name="Кто", value=interaction.user.mention, inline=True)
+                emb.add_field(name="Причина", value=self.reason.value, inline=False)
+                emb.add_field(name="Баланс теперь", value=fmt_coins(new_bal), inline=False)
+                emb.set_footer(text=FOOTER_TEXT,
+                               icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+                try:
+                    await ch.send(embed=emb)
+                except Exception:
+                    pass
+
+
+class GiveView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    def _can(self, member):
+        return (member.id == member.guild.owner_id
+                or (GIVE_COIN_ROLE_ID and _has_any_role(member, [GIVE_COIN_ROLE_ID])))
+
+    @discord.ui.button(label="➕ Выдать монеты", style=discord.ButtonStyle.success, custom_id="give_add")
+    async def add(self, interaction, button):
+        if not self._can(interaction.user):
+            await interaction.response.send_message("⛔ Нет прав.", ephemeral=True)
+            return
+        await interaction.response.send_modal(GiveModal("add"))
+
+    @discord.ui.button(label="➖ Забрать монеты", style=discord.ButtonStyle.danger, custom_id="give_take")
+    async def take(self, interaction, button):
+        if not self._can(interaction.user):
+            await interaction.response.send_message("⛔ Нет прав.", ephemeral=True)
+            return
+        await interaction.response.send_modal(GiveModal("take"))
+
+
+def give_embed():
+    embed = discord.Embed(
+        title="💸  ВЫДАЧА МОНЕТ  ·  EXTENDO FAMILY",
+        color=EMBED_COLOR,
+        description=(
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Панель управления балансами игроков.\n\n"
+            "➕ **Выдать монеты** — начислить участнику\n"
+            "➖ **Забрать монеты** — снять с участника\n\n"
+            "⚠️ Причина указывается **обязательно** — всё пишется в логи.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ))
+    if THUMBNAIL_URL.startswith("http"):
+        embed.set_thumbnail(url=THUMBNAIL_URL)
+    if BANNER_URL.startswith("http"):
+        embed.set_image(url=BANNER_URL)
+    embed.set_footer(text=FOOTER_TEXT,
+                     icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+    return embed
+
+
+@bot.tree.command(name="панель_выдача", description="Выложить панель выдачи монет")
+async def give_panel_cmd(interaction: discord.Interaction):
+    can = (interaction.user.id == interaction.guild.owner_id
+           or (GIVE_COIN_ROLE_ID and _has_any_role(interaction.user, [GIVE_COIN_ROLE_ID])))
+    if not can:
+        await interaction.response.send_message("⛔ Нет прав выкладывать панель выдачи.", ephemeral=True)
+        return
+    try:
+        await interaction.channel.send(embed=give_embed(), view=GiveView())
+        await interaction.response.send_message("Готово ✅", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"⚠️ Ошибка: {e}", ephemeral=True)
+
+
 @bot.tree.command(name="магазин", description="Выложить магазин в этот канал")
 async def shop_cmd(interaction: discord.Interaction):
     can = (interaction.user.id == interaction.guild.owner_id
@@ -973,7 +1103,7 @@ async def on_ready():
         weekly_loop.start()
     if not voice_digest_loop.is_running():
         voice_digest_loop.start()
-    print(f"=== EXTENDO BOT v13.1 === запущен как {bot.user}")
+    print(f"=== EXTENDO BOT v14 (панель выдачи) === запущен как {bot.user}")
 
 
 load_data()
