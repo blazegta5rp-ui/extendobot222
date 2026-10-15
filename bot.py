@@ -212,11 +212,6 @@ class FamilyBot(discord.Client):
         self.add_dynamic_items(ApplyButton, AcceptButton, CallButton, DeclineButton)
         self.add_view(ShopView())
         self.add_view(GiveView())
-        try:
-            synced = await self.tree.sync()
-            print(f"Синхронизировано команд: {len(synced)}")
-        except Exception as e:
-            print(f"Ошибка синхронизации команд: {e}")
 
 
 bot = FamilyBot()
@@ -1095,6 +1090,30 @@ async def shop_cmd(interaction: discord.Interaction):
 # ============================================================================
 #  ЗАПУСК
 # ============================================================================
+@bot.tree.command(name="closeticket", description="Закрыть тикет покупки (в канале тикета)")
+async def close_ticket_cmd(interaction: discord.Interaction):
+    ch = interaction.channel
+    # только в каналах-тикетах покупок
+    if not ch or not ch.name.startswith("покупка-"):
+        await interaction.response.send_message(
+            "⛔ Команду можно использовать только внутри тикета покупки.", ephemeral=True)
+        return
+    # права: владелец, Coin Manager или персонал уведомлений
+    allowed = (interaction.user.id == interaction.guild.owner_id
+               or (GIVE_COIN_ROLE_ID and _has_any_role(interaction.user, [GIVE_COIN_ROLE_ID]))
+               or interaction.user.id in PURCHASE_NOTIFY_USER_IDS)
+    if not allowed:
+        await interaction.response.send_message("⛔ Нет прав закрывать тикеты.", ephemeral=True)
+        return
+    await interaction.response.send_message("🔒 Тикет закрывается через 5 секунд…", ephemeral=True)
+    import asyncio as _a
+    await _a.sleep(5)
+    try:
+        await ch.delete(reason=f"Тикет закрыл {interaction.user}")
+    except Exception:
+        pass
+
+
 @bot.event
 async def on_ready():
     if not voice_earn_loop.is_running():
@@ -1103,7 +1122,18 @@ async def on_ready():
         weekly_loop.start()
     if not voice_digest_loop.is_running():
         voice_digest_loop.start()
-    print(f"=== EXTENDO BOT v14 (панель выдачи) === запущен как {bot.user}")
+    # МГНОВЕННАЯ регистрация команд во все серверы, где есть бот
+    try:
+        for g in bot.guilds:
+            bot.tree.copy_global_to(guild=g)
+            synced = await bot.tree.sync(guild=g)
+            print(f"[SYNC] сервер {g.name}: {len(synced)} команд", flush=True)
+        # чистим старые глобальные команды (чтобы не было дублей)
+        bot.tree.clear_commands(guild=None)
+        await bot.tree.sync()
+    except Exception as e:
+        print(f"[SYNC] ошибка: {e}", flush=True)
+    print(f"=== EXTENDO BOT v15 === запущен как {bot.user}", flush=True)
 
 
 load_data()
