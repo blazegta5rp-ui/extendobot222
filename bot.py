@@ -59,8 +59,11 @@ FAMILIES = {
 CURRENCY_NAME = "Extendo Coins"   # игровая валюта
 CURRENCY_EMOJI = "🪙"
 FOOTER_TEXT = "EXTENDO FAMILY"
-COINS_PER_ACCEPT = 10          # коинов рекрутеру за каждого принятого в семью
-COINS_PER_VOICE_MINUTE = 1     # коинов за каждую минуту в голосовом
+COINS_PER_ACCEPT = 10          # монет рекрутеру за принятого (базово)
+COINS_PER_HOUR = 1             # монета за ПОЛНЫЙ час в войсе (базово)
+NIGHT_MULTIPLIER = 1.3         # ночной бонус ×1.3
+NIGHT_FROM = 0                 # ночь с 00:00 МСК
+NIGHT_TO = 10                  # ночь до 10:00 МСК
 
 # каналы/роли экономики (0 = не настроено)
 TOP_CHANNEL_ID = 1560278779337900164   # топ-10 + розыгрыш
@@ -99,11 +102,21 @@ SHOP_ITEMS = [
 ECONOMY_INFO = (
     "💠 **Как заработать {cur}:**\n"
     "┣ 🎙 1 час в войсе (не в муте) — **1** монета\n"
-    "┗ 👥 1 принятый рекрутом — **10** монет"
+    "┣ 👥 1 принятый рекрутом — **10** монет\n"
+    "┗ 🌙 Ночью **00:00–10:00 МСК** — бонус **×1.3** (13 за принятого, 1.3 за час)"
 )
 
 MSK = datetime.timezone(datetime.timedelta(hours=3))
 DATA_FILE = "data.json"
+
+
+def is_night():
+    h = datetime.datetime.now(MSK).hour
+    return NIGHT_FROM <= h < NIGHT_TO
+
+
+def current_mult():
+    return NIGHT_MULTIPLIER if is_night() else 1.0
 
 # --- Вопросы анкеты ---
 Q1_LABEL = "Ваше имя & возраст в IRL & игровой ник"
@@ -175,10 +188,13 @@ def u(uid):
     user = _data["users"].get(uid)
     if user is None:
         user = {"balance": 0, "accepted": 0, "voice_sec": 0,
-                "w_accepted": 0, "w_voice": 0}
+                "w_accepted": 0, "w_voice": 0,
+                "d_voice": 0, "vbucket": 0, "d_day": ""}
         _data["users"][uid] = user
-    for k in ("balance", "accepted", "voice_sec", "w_accepted", "w_voice"):
+    for k in ("balance", "accepted", "voice_sec", "w_accepted", "w_voice",
+              "d_voice", "vbucket"):
         user.setdefault(k, 0)
+    user.setdefault("d_day", "")
     return user
 
 
@@ -191,8 +207,10 @@ def add_accept(uid):
     user = u(uid)
     user["accepted"] += 1
     user["w_accepted"] += 1
-    user["balance"] += COINS_PER_ACCEPT
+    earned = COINS_PER_ACCEPT * current_mult()
+    user["balance"] += earned
     save_data()
+    return earned
 
 
 # ============================================================================
@@ -258,7 +276,12 @@ async def log_coins(member, amount, balance, reason):
 
 
 def fmt_coins(n):
-    return f"{n:,}".replace(",", " ") + f" {CURRENCY_EMOJI}"
+    n = round(float(n), 1)
+    if n.is_integer():
+        txt = f"{int(n):,}".replace(",", " ")
+    else:
+        txt = f"{n:,.1f}".replace(",", " ")
+    return txt + f" {CURRENCY_EMOJI}"
 
 
 def item_stock(item):
@@ -419,9 +442,9 @@ async def finalize_accept(interaction, family_key, applicant_id, source_message,
             pass
 
     # === ЭКОНОМИКА: рекрутер получает монеты + счётчик принятых ===
-    add_accept(reviewer.id)
-    await log_coins(reviewer, COINS_PER_ACCEPT, u(reviewer.id)["balance"],
-                    f"Принят игрок в {fam['name']}")
+    earned = add_accept(reviewer.id)
+    await log_coins(reviewer, earned, u(reviewer.id)["balance"],
+                    f"Принят игрок в {fam['name']}" + (" 🌙×1.3" if is_night() else ""))
 
     role_name = role.name if role else "—"
     try:
@@ -439,7 +462,7 @@ async def finalize_accept(interaction, family_key, applicant_id, source_message,
 
     note = ("\n⚠️ " + "; ".join(warns)) if warns else ""
     msg = (f"Кандидат принят в {fam['name']}, выдана роль **{role_name}**. "
-           f"Тебе начислено {fmt_coins(COINS_PER_ACCEPT)}.{note}")
+           f"Тебе начислено {fmt_coins(earned)}" + (" 🌙 (ночной ×1.3)" if is_night() else "") + f".{note}")
     try:
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
@@ -608,6 +631,8 @@ async def panel_vzp(interaction):
 # ============================================================================
 @tasks.loop(minutes=1)
 async def voice_earn_loop():
+    today = datetime.datetime.now(MSK).strftime("%Y-%m-%d")
+    mult = current_mult()
     for guild in bot.guilds:
         for vc in guild.voice_channels:
             if AFK_CHANNEL_ID and vc.id == AFK_CHANNEL_ID:
@@ -616,13 +641,24 @@ async def voice_earn_loop():
                 if member.bot:
                     continue
                 vs = member.voice
-                if vs and (vs.self_mute or vs.mute) and (vs.self_deaf or vs.deaf):
-                    continue  # полностью заглушен — не капает
+                if vs and (vs.self_mute or vs.mute):
+                    continue  # в муте — монеты НЕ капают
                 user = u(member.id)
+                # дневной сброс статистики
+                if user.get("d_day") != today:
+                    user["d_day"] = today
+                    user["d_voice"] = 0
+                # +1 минута времени
                 user["voice_sec"] += 60
                 user["w_voice"] += 60
-                user["balance"] += COINS_PER_VOICE_MINUTE
-                voice_hour_earn[member.id] = voice_hour_earn.get(member.id, 0) + COINS_PER_VOICE_MINUTE
+                user["d_voice"] += 60
+                user["vbucket"] += 60
+                # монета ТОЛЬКО за каждый полный час (3600 сек)
+                while user["vbucket"] >= 3600:
+                    user["vbucket"] -= 3600
+                    coins = COINS_PER_HOUR * mult
+                    user["balance"] += coins
+                    voice_hour_earn[member.id] = voice_hour_earn.get(member.id, 0) + coins
     save_data()
 
 
@@ -767,6 +803,45 @@ async def weekly_loop():
 
 @weekly_loop.before_loop
 async def _before_weekly():
+    await bot.wait_until_ready()
+
+
+@tasks.loop(hours=1)
+async def hourly_stats_loop():
+    if not TOP_CHANNEL_ID:
+        return
+    ch = bot.get_channel(TOP_CHANNEL_ID)
+    if not ch:
+        return
+    # топ недели
+    try:
+        await ch.send(embed=build_top_embed(weekly=True))
+    except Exception:
+        pass
+    # стата «кто сколько насидел за сегодня»
+    users = _data["users"]
+    rows = sorted(users.items(), key=lambda kv: kv[1].get("d_voice", 0), reverse=True)
+    medals = ["🥇", "🥈", "🥉"] + ["▫️"] * 7
+    lines = []
+    for i, (uid, d) in enumerate(rows[:10]):
+        if d.get("d_voice", 0) <= 0:
+            break
+        lines.append(f"{medals[i]} <@{uid}> — **{fmt_voice(d['d_voice'])}**")
+    emb = discord.Embed(title="📊  НАСИЖЕНО ЗА СЕГОДНЯ (войсы)", color=EMBED_COLOR,
+                        description="\n".join(lines) or "—",
+                        timestamp=datetime.datetime.now(MSK))
+    if THUMBNAIL_URL.startswith("http"):
+        emb.set_thumbnail(url=THUMBNAIL_URL)
+    emb.set_footer(text=FOOTER_TEXT,
+                   icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+    try:
+        await ch.send(embed=emb)
+    except Exception:
+        pass
+
+
+@hourly_stats_loop.before_loop
+async def _before_hourly_stats():
     await bot.wait_until_ready()
 
 
@@ -1090,6 +1165,41 @@ async def shop_cmd(interaction: discord.Interaction):
 # ============================================================================
 #  ЗАПУСК
 # ============================================================================
+class ResetConfirmView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=30)
+
+    @discord.ui.button(label="✅ ДА, обнулить всем", style=discord.ButtonStyle.danger)
+    async def yes(self, interaction, button):
+        count = 0
+        for d in _data["users"].values():
+            d["balance"] = 0
+            count += 1
+        save_data()
+        for c in self.children:
+            c.disabled = True
+        await interaction.response.edit_message(
+            content=f"✅ Баланс обнулён у **{count}** участников.", view=self)
+
+    @discord.ui.button(label="Отмена", style=discord.ButtonStyle.secondary)
+    async def no(self, interaction, button):
+        for c in self.children:
+            c.disabled = True
+        await interaction.response.edit_message(content="Отменено.", view=self)
+
+
+@bot.tree.command(name="обнулить_монеты", description="Обнулить монеты ВСЕМ участникам")
+async def reset_coins_cmd(interaction: discord.Interaction):
+    can = (interaction.user.id == interaction.guild.owner_id
+           or (GIVE_COIN_ROLE_ID and _has_any_role(interaction.user, [GIVE_COIN_ROLE_ID])))
+    if not can:
+        await interaction.response.send_message("⛔ Нет прав.", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        "⚠️ **Обнулить монеты ВСЕМ?** Это нельзя отменить.",
+        view=ResetConfirmView(), ephemeral=True)
+
+
 @bot.tree.command(name="closeticket", description="Закрыть тикет покупки (в канале тикета)")
 async def close_ticket_cmd(interaction: discord.Interaction):
     ch = interaction.channel
@@ -1122,6 +1232,8 @@ async def on_ready():
         weekly_loop.start()
     if not voice_digest_loop.is_running():
         voice_digest_loop.start()
+    if not hourly_stats_loop.is_running():
+        hourly_stats_loop.start()
     # МГНОВЕННАЯ регистрация команд во все серверы, где есть бот
     try:
         for g in bot.guilds:
@@ -1133,7 +1245,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v15 === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v16 (1 монета/час + ночь ×1.3) === запущен как {bot.user}", flush=True)
 
 
 load_data()
