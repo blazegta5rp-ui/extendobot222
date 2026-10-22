@@ -1190,14 +1190,22 @@ class ResetConfirmView(discord.ui.View):
 
 @bot.tree.command(name="обнулить_монеты", description="Обнулить монеты ВСЕМ участникам")
 async def reset_coins_cmd(interaction: discord.Interaction):
-    can = (interaction.user.id == interaction.guild.owner_id
-           or (GIVE_COIN_ROLE_ID and _has_any_role(interaction.user, [GIVE_COIN_ROLE_ID])))
-    if not can:
-        await interaction.response.send_message("⛔ Нет прав.", ephemeral=True)
-        return
-    await interaction.response.send_message(
-        "⚠️ **Обнулить монеты ВСЕМ?** Это нельзя отменить.",
-        view=ResetConfirmView(), ephemeral=True)
+    try:
+        owner_id = interaction.guild.owner_id if interaction.guild else None
+        can = (interaction.user.id == owner_id
+               or (GIVE_COIN_ROLE_ID and _has_any_role(interaction.user, [GIVE_COIN_ROLE_ID])))
+        if not can:
+            await interaction.response.send_message("⛔ Нет прав.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "⚠️ **Обнулить монеты ВСЕМ?** Это нельзя отменить.",
+            view=ResetConfirmView(), ephemeral=True)
+    except Exception as e:
+        print(f"[reset] {e}", flush=True)
+        try:
+            await interaction.response.send_message(f"⚠️ Ошибка: {e}", ephemeral=True)
+        except Exception:
+            pass
 
 
 @bot.tree.command(name="closeticket", description="Закрыть тикет покупки (в канале тикета)")
@@ -1224,6 +1232,46 @@ async def close_ticket_cmd(interaction: discord.Interaction):
         pass
 
 
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error):
+    print(f"[CMD ERROR] {type(error).__name__}: {error}", flush=True)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(f"⚠️ Ошибка команды: {error}", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⚠️ Ошибка команды: {error}", ephemeral=True)
+    except Exception:
+        pass
+
+
+@bot.tree.command(name="айди", description="Показать ID всех ролей и каналов сервера")
+async def ids_cmd(interaction: discord.Interaction):
+    # только владелец или Coin Manager / head-роли — чтобы не светить всем
+    can = (interaction.user.id == interaction.guild.owner_id
+           or interaction.user.guild_permissions.administrator)
+    if not can:
+        await interaction.response.send_message("⛔ Только для админов.", ephemeral=True)
+        return
+    g = interaction.guild
+    # РОЛИ
+    role_lines = [f"{r.name} = {r.id}" for r in reversed(g.roles) if r.name != "@everyone"]
+    # КАНАЛЫ
+    chan_lines = []
+    for cat, chans in g.by_category():
+        if cat:
+            chan_lines.append(f"\n[КАТЕГОРИЯ] {cat.name} = {cat.id}")
+        for ch in chans:
+            t = "голос" if isinstance(ch, discord.VoiceChannel) else "текст"
+            chan_lines.append(f"  ({t}) {ch.name} = {ch.id}")
+
+    import io
+    text = "=== РОЛИ ===\n" + "\n".join(role_lines) + "\n\n=== КАНАЛЫ ===\n" + "\n".join(chan_lines)
+    buf = io.BytesIO(text.encode("utf-8"))
+    await interaction.response.send_message(
+        "📋 Все ID ролей и каналов во вложении:",
+        file=discord.File(buf, filename="ids.txt"), ephemeral=True)
+
+
 @bot.event
 async def on_ready():
     if not voice_earn_loop.is_running():
@@ -1245,7 +1293,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v16 (1 монета/час + ночь ×1.3) === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v16.2 === запущен как {bot.user}", flush=True)
 
 
 load_data()
