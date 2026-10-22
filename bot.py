@@ -27,27 +27,52 @@ EMBED_COLOR = 0xB11226
 #  КОНФИГ СЕМЕЙ (ЗАЯВКИ) — как было
 # ----------------------------------------------------------------------------
 FAMILIES = {
-    "extendo": {
-        "name": "EXTENDO",
-        "panel_title": "🩸 Вступление в семью EXTENDO",
+    "extendo": {  # Chilliad RP
+        "name": "EXTENDO CHILLIAD",
+        "panel_title": "🩸 Вступление в семью EXTENDO CHILLIAD",
         "submit_channel_id": 1494355176260112394,
         "logs_channel_id": 1497713478314623077,
-        "accepted_role_id": 1533198229158494360,   # academy
-        "family_role_id": 1524756881472622674,      # family (выбор кнопкой)
+        "accepted_role_id": 1533198229158494360,       # Academy (общая)
+        "family_role_id": 1524756881472622674,          # Extendo Family Chilliad
         "recruiter_role_ids": [1524757394955960511, 1513509436600090644,
                                1513294574007615518, 701066783498698813],
-        "panel_role_ids": [1513294574007615518],
+        "panel_role_ids": [1513294574007615518],        # Head Recruitment Chilliad
         "call_voice_channel_id": 1510082641762717696,
     },
-    "vzp": {
-        "name": "EXTENDO VZP",
-        "panel_title": "🩸 Вступление в семью EXTENDO VZP",
+    "vzp": {  # Chilliad VZP
+        "name": "EXTENDO CHILLIAD VZP",
+        "panel_title": "🩸 Вступление в семью EXTENDO CHILLIAD VZP",
         "submit_channel_id": 1513633675277897809,
         "logs_channel_id": 1513633996041355264,
-        "accepted_role_id": 1512956758719467591,
+        "accepted_role_id": 1512956758719467591,        # VZP (общая)
         "recruiter_role_ids": [1510102054696259654, 1513510003607212062,
                                701066783498698813],
-        "panel_role_ids": [1513510003607212062],
+        "panel_role_ids": [1513510003607212062],        # Head VZP Chilliad
+        "call_voice_channel_id": 1510082641762717696,
+    },
+    "blaine": {  # Blaine RP
+        "name": "EXTENDO BLAINE",
+        "panel_title": "🩸 Вступление в семью EXTENDO BLAINE",
+        "submit_channel_id": 1562894004712906823,
+        "logs_channel_id": 0,                           # создаётся /setup_blaine -> cfg
+        "logs_cfg_key": "blaine_rp_logs",
+        "accepted_role_id": 1533198229158494360,        # Academy (общая)
+        "family_role_id": 1562892249883345026,          # Extendo Family Blaine
+        "recruiter_role_ids": [1562892139212439708, 1513509436600090644,
+                               1562891847234359507, 1562892051866198177],
+        "panel_role_ids": [1562891847234359507],        # Head Recruitment Blaine
+        "call_voice_channel_id": 1510082641762717696,
+    },
+    "blaine_vzp": {  # Blaine VZP
+        "name": "EXTENDO BLAINE VZP",
+        "panel_title": "🩸 Вступление в семью EXTENDO BLAINE VZP",
+        "submit_channel_id": 1562893949566193664,
+        "logs_channel_id": 0,
+        "logs_cfg_key": "blaine_vzp_logs",
+        "accepted_role_id": 1512956758719467591,        # VZP (общая)
+        "recruiter_role_ids": [1510102054696259654, 1562891933561397258,
+                               1562892051866198177],
+        "panel_role_ids": [1562891933561397258],        # Head VZP Blaine
         "call_voice_channel_id": 1510082641762717696,
     },
 }
@@ -169,6 +194,7 @@ def load_data():
     _data.setdefault("users", {})
     _data.setdefault("last_weekly", "")
     _data.setdefault("stock", {})
+    _data.setdefault("cfg", {})
     # инициализация остатков из SHOP_ITEMS (если ещё нет)
     for it in SHOP_ITEMS:
         if it.get("stock") is not None and it["id"] not in _data["stock"]:
@@ -249,6 +275,15 @@ def _has_any_role(member, role_ids):
     return any(rid in have for rid in role_ids)
 
 
+def fam_logs_channel(fam):
+    key = fam.get("logs_cfg_key")
+    if key:
+        cid = _data.get("cfg", {}).get(key)
+        if cid:
+            return cid
+    return fam.get("logs_channel_id", 0)
+
+
 def member_can_review(member, family_key):
     return _has_any_role(member, FAMILIES[family_key]["recruiter_role_ids"])
 
@@ -320,7 +355,7 @@ class ApplicationModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         fam = FAMILIES[self.family_key]
-        channel = interaction.client.get_channel(fam["logs_channel_id"])
+        channel = interaction.client.get_channel(fam_logs_channel(fam))
         if channel is None:
             await interaction.response.send_message(
                 "⚠️ Канал логов заявок не настроен. Сообщи администратору.", ephemeral=True)
@@ -616,14 +651,24 @@ async def post_panel(interaction, family_key):
             f"⚠️ Не смог отправить сообщение: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="панель", description="Выложить панель заявок EXTENDO")
+@bot.tree.command(name="панель", description="Выложить панель заявок EXTENDO CHILLIAD")
 async def panel_extendo(interaction):
     await post_panel(interaction, "extendo")
 
 
-@bot.tree.command(name="панель_vzp", description="Выложить панель заявок EXTENDO VZP")
+@bot.tree.command(name="панель_vzp", description="Выложить панель заявок EXTENDO CHILLIAD VZP")
 async def panel_vzp(interaction):
     await post_panel(interaction, "vzp")
+
+
+@bot.tree.command(name="панель_blaine", description="Выложить панель заявок EXTENDO BLAINE")
+async def panel_blaine(interaction):
+    await post_panel(interaction, "blaine")
+
+
+@bot.tree.command(name="панель_blaine_vzp", description="Выложить панель заявок EXTENDO BLAINE VZP")
+async def panel_blaine_vzp(interaction):
+    await post_panel(interaction, "blaine_vzp")
 
 
 # ============================================================================
@@ -1272,6 +1317,120 @@ async def ids_cmd(interaction: discord.Interaction):
         file=discord.File(buf, filename="ids.txt"), ephemeral=True)
 
 
+# ============================================================================
+#  ===== SETUP BLAINE: создать структуру Blaine зеркально Chilliad =====
+# ============================================================================
+# карта Chilliad-роль -> Blaine-роль (права/цвет копируются, overwrites переназначаются)
+BLAINE_ROLE_MAP = {
+    996791697193308302: 1562891371101032528,   # Dep.Owner
+    1513294574007615518: 1562891847234359507,   # Head Recruitment
+    1513510003607212062: 1562891933561397258,   # Head VZP
+    701066783498698813: 1562892051866198177,    # Extendo Main
+    1524757394955960511: 1562892139212439708,   # Recruitment
+    1524756881472622674: 1562892249883345026,   # Extendo Family
+}
+SRC_RECRUIT_CAT = 1513305674791256228   # Recruitment Chilliad (источник)
+SRC_MEMBERS_CAT = 1494369677248561174   # Extendo (источник)
+SHOP_CHANNEL_ID = 1560278688107470998   # магазин
+EXTENDO_FAMILY_BLAINE = 1562892249883345026
+
+
+async def _mirror_category(guild, src_cat_id, new_name):
+    # не дублировать, если уже есть
+    for c in guild.categories:
+        if c.name == new_name:
+            return c, list(c.channels)
+    src = guild.get_channel(src_cat_id)
+    if not src:
+        return None, []
+    # переназначаем overwrites: Chilliad-роли -> Blaine-роли, остальное как есть
+    ow = {}
+    for target, perm in src.overwrites.items():
+        if isinstance(target, discord.Role) and target.id in BLAINE_ROLE_MAP:
+            nt = guild.get_role(BLAINE_ROLE_MAP[target.id])
+            if nt:
+                ow[nt] = perm
+        else:
+            ow[target] = perm
+    newcat = await guild.create_category(new_name, overwrites=ow)
+    created = []
+    for ch in src.channels:
+        try:
+            if isinstance(ch, discord.VoiceChannel):
+                nc = await guild.create_voice_channel(ch.name, category=newcat)
+            else:
+                nc = await guild.create_text_channel(ch.name, category=newcat)
+            created.append(nc)
+        except Exception as e:
+            print(f"[setup] канал {ch.name}: {e}", flush=True)
+    return newcat, created
+
+
+@bot.tree.command(name="setup_blaine", description="Создать структуру Extendo Blaine (роли, каналы, права)")
+async def setup_blaine_cmd(interaction: discord.Interaction):
+    if (interaction.user.id != interaction.guild.owner_id
+            and not interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("⛔ Только для админов/владельца.", ephemeral=True)
+        return
+    await interaction.response.send_message("⏳ Создаю структуру Blaine… это займёт ~10-20 сек.", ephemeral=True)
+    g = interaction.guild
+    report = []
+
+    # 1) копируем права + цвет ролей Chilliad -> Blaine
+    for cid, bid in BLAINE_ROLE_MAP.items():
+        cr = g.get_role(cid)
+        br = g.get_role(bid)
+        if cr and br:
+            try:
+                await br.edit(permissions=cr.permissions, colour=cr.colour,
+                              hoist=cr.hoist, mentionable=cr.mentionable,
+                              reason="Копия прав с Chilliad")
+            except Exception as e:
+                report.append(f"роль {br.name}: {e}")
+
+    # 2) Recruitment Blaine
+    rec_cat, rec_ch = await _mirror_category(g, SRC_RECRUIT_CAT, "Recruitment Blaine")
+    for ch in rec_ch:
+        if "логи-заявок" in ch.name and "vzp" not in ch.name.lower():
+            _data.setdefault("cfg", {})["blaine_rp_logs"] = ch.id
+    # отдельный канал логов VZP для Blaine
+    if rec_cat:
+        existing_vzp = discord.utils.get(rec_cat.channels, name="логи-заявок-vzp")
+        if existing_vzp:
+            _data.setdefault("cfg", {})["blaine_vzp_logs"] = existing_vzp.id
+        else:
+            try:
+                vlog = await g.create_text_channel("логи-заявок-vzp", category=rec_cat)
+                _data.setdefault("cfg", {})["blaine_vzp_logs"] = vlog.id
+            except Exception as e:
+                report.append(f"vzp-логи: {e}")
+
+    # 3) Extendo Blaine (члены)
+    await _mirror_category(g, SRC_MEMBERS_CAT, "Extendo Blaine")
+
+    # 4) доступ в магазин для Extendo Family Blaine
+    shop = g.get_channel(SHOP_CHANNEL_ID)
+    fam_b = g.get_role(EXTENDO_FAMILY_BLAINE)
+    if shop and fam_b:
+        try:
+            await shop.set_permissions(fam_b, view_channel=True, reason="Доступ Blaine в магазин")
+        except Exception as e:
+            report.append(f"магазин: {e}")
+
+    save_data()
+    cfg = _data.get("cfg", {})
+    msg = ("✅ **Blaine создан!**\n"
+           f"📥 Логи RP: <#{cfg.get('blaine_rp_logs', 0)}>\n"
+           f"📥 Логи VZP: <#{cfg.get('blaine_vzp_logs', 0)}>\n"
+           "Панели: `/панель_blaine` и `/панель_blaine_vzp`")
+    if report:
+        msg += "\n⚠️ Предупреждения:\n- " + "\n- ".join(report[:8])
+    try:
+        await interaction.followup.send(msg, ephemeral=True)
+    except Exception:
+        pass
+
+
 @bot.event
 async def on_ready():
     if not voice_earn_loop.is_running():
@@ -1293,7 +1452,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v16.2 === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v17 (Blaine) === запущен как {bot.user}", flush=True)
 
 
 load_data()
