@@ -777,6 +777,10 @@ async def post_panel(interaction, family_key):
     view.add_item(ApplyButton(family_key))
     try:
         await interaction.channel.send(embed=embed, view=view)
+        # запоминаем канал заявок RP Chilliad для приветствия новичков
+        if family_key == "extendo":
+            _data.setdefault("cfg", {})["apply"] = interaction.channel_id
+            save_data()
         await interaction.response.send_message("Готово ✅", ephemeral=True)
     except Exception as e:
         await interaction.response.send_message(
@@ -1180,6 +1184,51 @@ def build_top_embed(weekly=False):
 @bot.tree.command(name="топ", description="Показать топ-10 (всё время)")
 async def top_cmd(interaction):
     await interaction.response.send_message(embed=build_top_embed(weekly=False))
+
+
+@bot.tree.command(name="балансы", description="Список баланса КАЖДОГО участника (для админов)")
+@app_commands.describe(только_с_монетами="Показывать только тех, у кого монеты > 0")
+async def balances_cmd(interaction: discord.Interaction, только_с_монетами: bool = True):
+    if (interaction.user.id != interaction.guild.owner_id
+            and not interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("⛔ Только для админов.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    g = interaction.guild
+    users = _data.get("users", {})
+    rows = []
+    for uid, d in users.items():
+        bal = round(d.get("balance", 0), 1)
+        if только_с_монетами and bal <= 0:
+            continue
+        m = g.get_member(int(uid)) if uid.isdigit() else None
+        name = m.display_name if m else f"id:{uid}"
+        rows.append((bal, name, uid))
+    rows.sort(key=lambda x: x[0], reverse=True)
+    total = round(sum(d.get("balance", 0) for d in users.values()), 1)
+
+    if not rows:
+        await interaction.followup.send("Пока ни у кого нет монет.", ephemeral=True)
+        return
+
+    # текстовый файл со ВСЕМИ (чтобы не упереться в лимит сообщения)
+    lines = [f"{i:>3}. {name:<28} {bal:>8} {CURRENCY_NAME}"
+             for i, (bal, name, uid) in enumerate(rows, 1)]
+    header = (f"=== БАЛАНСЫ УЧАСТНИКОВ EXTENDO ===\n"
+              f"Всего участников с монетами: {len(rows)}\n"
+              f"Суммарно в экономике: {total} {CURRENCY_NAME}\n"
+              f"{'-'*52}\n")
+    buf = io.BytesIO((header + "\n".join(lines)).encode("utf-8"))
+
+    # топ-15 прямо в сообщение
+    preview = "\n".join(f"`{i:>2}.` {name} — **{bal}** {CURRENCY_EMOJI}"
+                        for i, (bal, name, uid) in enumerate(rows[:15], 1))
+    emb = discord.Embed(title="💰 Балансы участников",
+                        description=preview, color=EMBED_COLOR)
+    emb.set_footer(text=f"Всего: {len(rows)} чел · {total} {CURRENCY_NAME} · полный список во вложении")
+    await interaction.followup.send(embed=emb,
+                                    file=discord.File(buf, filename="balances.txt"),
+                                    ephemeral=True)
 
 
 # ============================================================================
@@ -1977,6 +2026,11 @@ async def on_member_join(member):
     if not ch:
         return
     count = member.guild.member_count
+    # канал подачи заявок (если задан в cfg -> упомянем, иначе общий текст)
+    apply_id = _data.get("cfg", {}).get("apply", 0)
+    apply_txt = (f"Перейди в <#{apply_id}>, нажми кнопку **«Подать заявку»** и заполни анкету."
+                 if apply_id else
+                 "Зайди в канал **заявок** своей семьи, нажми кнопку **«Подать заявку»** и заполни анкету.")
     emb = discord.Embed(
         title="Д О Б Р О   П О Ж А Л О В А Т Ь",
         color=EMBED_COLOR,
@@ -1986,14 +2040,16 @@ async def on_member_join(member):
                     f"▸ Загляни в **правила**\n"
                     f"▸ Поставь ник **по форме**\n"
                     f"▸ Залетай в войс — погнали 🔥"))
+    emb.add_field(name="📝 Как попасть в семью", value=apply_txt, inline=False)
     emb.set_thumbnail(url=member.display_avatar.url)   # аватар новичка
     if BANNER_URL.startswith("http"):
         emb.set_image(url=BANNER_URL)                  # логотип фамы крупно
     emb.set_footer(text=FOOTER_TEXT,
                    icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
     try:
-        await ch.send(content=f"🎉 {member.mention}", embed=emb,
-                      allowed_mentions=discord.AllowedMentions(users=True))
+        await ch.send(
+            content=f"🎉 {member.mention}, добро пожаловать! 📝 {apply_txt}",
+            embed=emb, allowed_mentions=discord.AllowedMentions(users=True))
     except Exception:
         pass
 
@@ -2226,12 +2282,28 @@ def _norm(s):
     return str(s or "").lower().replace(" ", "").replace("x", "")
 
 
+_FONT_DIRS = [
+    os.path.dirname(os.path.abspath(__file__)),      # рядом с ботом (вшитые ttf)
+    "/usr/share/fonts/truetype/dejavu",
+    "/usr/share/fonts/dejavu", "/app/fonts", ".",
+]
+def _find_font(bold):
+    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    for d in _FONT_DIRS:
+        p = os.path.join(d, name)
+        if os.path.exists(p):
+            return p
+    return name     # пусть PIL сам поищет
+
 def _wfont(sz, bold=True):
     from PIL import ImageFont
     try:
-        return ImageFont.truetype(f"DejaVuSans{'-Bold' if bold else ''}.ttf", sz)
+        return ImageFont.truetype(_find_font(bold), sz)
     except Exception:
-        return ImageFont.load_default()
+        try:
+            return ImageFont.truetype(_find_font(not bold), sz)
+        except Exception:
+            return ImageFont.load_default()
 
 
 def make_war_image(enemy, location, server, our_side, win, time_str):
@@ -2475,6 +2547,12 @@ async def setup_war_cmd(interaction: discord.Interaction):
                 ch = None
         if ch:
             _data.setdefault("cfg", {})["war_chilliad"] = ch.id
+            try:   # видно ВСЕМ (читать могут все, писать — только бот)
+                await ch.edit(overwrites={
+                    g.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False),
+                    g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)})
+            except Exception as e:
+                report.append(f"права война-chilliad: {e}")
 
     # канал статы войн Blaine — в категории VZP Blaine
     blaine_cat = discord.utils.get(g.categories, name="VZP Blaine")
@@ -2488,6 +2566,12 @@ async def setup_war_cmd(interaction: discord.Interaction):
                 ch = None
         if ch:
             _data.setdefault("cfg", {})["war_blaine"] = ch.id
+            try:   # видно ВСЕМ (читать могут все, писать — только бот)
+                await ch.edit(overwrites={
+                    g.default_role: discord.PermissionOverwrite(view_channel=True, send_messages=False),
+                    g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)})
+            except Exception as e:
+                report.append(f"права война-blaine: {e}")
     else:
         report.append("Категория VZP Blaine не найдена — сначала /setup_vzp_blaine")
 
@@ -2529,23 +2613,19 @@ async def war_test_cmd(interaction: discord.Interaction):
 # ============================================================================
 #  ===== ЗАПИСЬ НА ВС (/reac) =====
 # ============================================================================
-REAC_POSITIONS = ["Вход", "Опора", "Фраг", "Разгон", "Коллер", "Хил", "Снайпер", "Любая"]
-
-
 def reac_embed(state):
     slots = state["slots"]
-    main = state["main"]       # {uid: position}
+    main = state["main"]       # [uid]  (позиции раздаём ПОСЛЕ колла)
     subs = state["subs"]       # [uid]
     embed = discord.Embed(title=f"📋  ЗАПИСЬ НА ВС  ·  {state['format']}",
                           color=EMBED_COLOR,
                           description=(f"🕒 {state.get('time','—')}\n"
-                                       "Выбери позицию в меню ниже — запишешься в основу.\n"
-                                       "Кол кидай в ветке. Нет места — жми **Замена**."))
+                                       "Жми **✅ Записаться** — попадёшь в основу.\n"
+                                       "Кол кидай в ветке. Нет места — жми **🔄 Замена**.\n"
+                                       "📌 Позиции раздаём **после колла**."))
     if THUMBNAIL_URL.startswith("http"):
         embed.set_thumbnail(url=THUMBNAIL_URL)
-    main_lines = []
-    for i, (uid, pos) in enumerate(main.items(), 1):
-        main_lines.append(f"`{i}.` <@{uid}> — **{pos}**")
+    main_lines = [f"`{i}.` <@{uid}>" for i, uid in enumerate(main, 1)]
     embed.add_field(name=f"✅ Основа ({len(main)}/{slots})",
                     value="\n".join(main_lines) or "—", inline=False)
     sub_lines = [f"<@{u}>" for u in subs]
@@ -2576,45 +2656,34 @@ async def reac_ensure_thread(interaction, state):
         return None
 
 
-class ReacPositionSelect(discord.ui.Select):
+class ReacView(discord.ui.View):
     def __init__(self):
-        opts = [discord.SelectOption(label=p, value=p) for p in REAC_POSITIONS]
-        super().__init__(placeholder="Выбери позицию и запишись…", options=opts,
-                         custom_id="reac_pos")
+        super().__init__(timeout=None)
 
-    async def callback(self, interaction: discord.Interaction):
+    @discord.ui.button(label="✅ Записаться", style=discord.ButtonStyle.success, custom_id="reac_join")
+    async def join(self, interaction, button):
         mid = str(interaction.message.id)
         state = _data.setdefault("reac", {}).get(mid)
         if not state:
-            await interaction.response.send_message("Эта запись уже неактивна.", ephemeral=True)
-            return
+            await interaction.response.send_message("Эта запись уже неактивна.", ephemeral=True); return
         uid = str(interaction.user.id)
-        pos = self.values[0]
         if uid in state["main"]:
-            state["main"][uid] = pos  # смена позиции
-        else:
-            if len(state["main"]) >= state["slots"]:
-                await interaction.response.send_message(
-                    "❌ Основа заполнена — жми **🔄 Замена**.", ephemeral=True)
-                return
-            if uid in state["subs"]:
-                state["subs"].remove(uid)
-            state["main"][uid] = pos
-        await interaction.response.send_message(f"✅ Ты записан: **{pos}**. Кидай кол в ветке.", ephemeral=True)
+            await interaction.response.send_message("Ты уже в основе ✅", ephemeral=True); return
+        if len(state["main"]) >= state["slots"]:
+            await interaction.response.send_message(
+                "❌ Основа заполнена — жми **🔄 Замена**.", ephemeral=True); return
+        if uid in state["subs"]:
+            state["subs"].remove(uid)
+        state["main"].append(uid)
+        await interaction.response.send_message("✅ Ты в основе. Кидай кол в ветке 📸", ephemeral=True)
         th = await reac_ensure_thread(interaction, state)
         if th:
             try:
                 await th.add_user(interaction.user)
-                await th.send(f"{interaction.user.mention} записался на **{pos}** — кидай кол 📸")
+                await th.send(f"{interaction.user.mention} записался — кидай кол 📸")
             except Exception:
                 pass
         await reac_update(interaction, state)
-
-
-class ReacView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(ReacPositionSelect())
 
     @discord.ui.button(label="🔄 Замена", style=discord.ButtonStyle.secondary, custom_id="reac_sub")
     async def sub(self, interaction, button):
@@ -2623,7 +2692,8 @@ class ReacView(discord.ui.View):
         if not state:
             await interaction.response.send_message("Запись неактивна.", ephemeral=True); return
         uid = str(interaction.user.id)
-        state["main"].pop(uid, None)
+        if uid in state["main"]:
+            state["main"].remove(uid)
         if uid not in state["subs"]:
             state["subs"].append(uid)
         await interaction.response.send_message("🔄 Ты в замене.", ephemeral=True)
@@ -2636,7 +2706,8 @@ class ReacView(discord.ui.View):
         if not state:
             await interaction.response.send_message("Запись неактивна.", ephemeral=True); return
         uid = str(interaction.user.id)
-        state["main"].pop(uid, None)
+        if uid in state["main"]:
+            state["main"].remove(uid)
         if uid in state["subs"]:
             state["subs"].remove(uid)
         await interaction.response.send_message("❌ Ты выписан.", ephemeral=True)
@@ -2663,7 +2734,7 @@ async def reac_cmd(interaction: discord.Interaction, формат: str, врем
     m = _re.match(r"\s*(\d+)", формат)
     slots = int(m.group(1)) if m else 6
     state = {"format": формат, "time": время, "slots": slots,
-             "main": {}, "subs": [], "thread_id": None,
+             "main": [], "subs": [], "thread_id": None,
              "channel_id": interaction.channel_id}
     await interaction.response.send_message("Создаю запись…", ephemeral=True)
     msg = await interaction.channel.send(content="@here 📋 **Запись на ВС!**",
@@ -2856,7 +2927,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v28 (лого вшито в код + бэкап-канал захардкожен) === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v29 (reac без позиций, балансы, welcome-заявка, война видна всем, шрифты вшиты) === запущен как {bot.user}", flush=True)
 
 
 load_data()
