@@ -274,7 +274,8 @@ def u(uid):
 
 
 def add_balance(uid, amount):
-    u(uid)["balance"] += amount
+    user = u(uid)
+    user["balance"] = max(0, user["balance"] + amount)   # не уходим в минус
     save_data()
 
 
@@ -433,6 +434,7 @@ class ApplicationModal(discord.ui.Modal):
         view.add_item(AcceptButton(self.family_key, interaction.user.id))
         view.add_item(CallButton(self.family_key, interaction.user.id))
         view.add_item(DeclineButton(self.family_key, interaction.user.id))
+        view.add_item(RelayButton(self.family_key, interaction.user.id))   # 💬 Написать кандидату
         ping = " ".join(f"<@&{rid}>" for rid in fam["recruiter_role_ids"])
         await channel.send(content=ping, embed=embed, view=view,
                            allowed_mentions=discord.AllowedMentions(roles=True))
@@ -1143,6 +1145,66 @@ async def give_cmd(interaction: discord.Interaction, участник: discord.M
                 await ch.send(embed=emb)
             except Exception:
                 pass
+
+
+def _can_manage_coins(member):
+    return (member.guild_permissions.administrator
+            or member.id == member.guild.owner_id
+            or (GIVE_COIN_ROLE_ID and _has_any_role(member, [GIVE_COIN_ROLE_ID])))
+
+
+async def _coin_log(участник, delta_text, actor, причина, new_bal):
+    if not GIVE_LOG_CHANNEL_ID:
+        return
+    ch = bot.get_channel(GIVE_LOG_CHANNEL_ID)
+    if not ch:
+        return
+    emb = discord.Embed(title="🪙 Изменение монет", color=EMBED_COLOR,
+                        timestamp=datetime.datetime.now(MSK))
+    emb.add_field(name="Кому", value=участник.mention, inline=True)
+    emb.add_field(name="Операция", value=delta_text, inline=True)
+    emb.add_field(name="Кто", value=actor.mention, inline=True)
+    emb.add_field(name="Причина", value=причина, inline=False)
+    emb.add_field(name="Баланс теперь", value=fmt_coins(new_bal), inline=False)
+    try:
+        await ch.send(embed=emb)
+    except Exception:
+        pass
+
+
+@bot.tree.command(name="снять", description="Снять монеты у участника (с причиной)")
+@app_commands.describe(участник="У кого снять", сумма="Сколько снять (положительное число)",
+                       причина="Обязательная причина")
+async def take_cmd(interaction: discord.Interaction, участник: discord.Member,
+                   сумма: int, причина: str):
+    if not _can_manage_coins(interaction.user):
+        await interaction.response.send_message("⛔ У тебя нет прав управлять монетами.", ephemeral=True)
+        return
+    if сумма <= 0:
+        await interaction.response.send_message("Сумма должна быть больше 0.", ephemeral=True)
+        return
+    before = round(u(участник.id)["balance"], 1)
+    add_balance(участник.id, -abs(сумма))          # не уйдёт в минус (clamp)
+    after = round(u(участник.id)["balance"], 1)
+    snyato = round(before - after, 1)
+    await interaction.response.send_message(
+        f"✅ Снято {fmt_coins(snyato)} у {участник.mention}\n"
+        f"Было: {before} → стало: {after}\nПричина: {причина}", ephemeral=True)
+    await _coin_log(участник, f"− {snyato}", interaction.user, причина, after)
+
+
+@bot.tree.command(name="обнулить_чела", description="Обнулить баланс КОНКРЕТНОГО участника")
+@app_commands.describe(участник="Кому обнулить баланс", причина="Обязательная причина")
+async def reset_one_cmd(interaction: discord.Interaction, участник: discord.Member, причина: str):
+    if not _can_manage_coins(interaction.user):
+        await interaction.response.send_message("⛔ У тебя нет прав управлять монетами.", ephemeral=True)
+        return
+    before = round(u(участник.id)["balance"], 1)
+    u(участник.id)["balance"] = 0
+    save_data()
+    await interaction.response.send_message(
+        f"✅ Баланс {участник.mention} обнулён (было {before}).\nПричина: {причина}", ephemeral=True)
+    await _coin_log(участник, f"обнулён (было {before})", interaction.user, причина, 0)
 
 
 # ============================================================================
@@ -2927,7 +2989,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v29 (reac без позиций, балансы, welcome-заявка, война видна всем, шрифты вшиты) === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v31 (кнопка Написать кандидату на заявке) === запущен как {bot.user}", flush=True)
 
 
 load_data()
