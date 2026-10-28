@@ -966,7 +966,7 @@ async def ensure_nickform(guild):
         ch = discord.utils.get(guild.text_channels, name="ник-не-по-форме")
         if ch is None:
             try:
-                ch = await guild.create_text_channel("ник-не-по-форме", reason="Система ник-формы")
+                ch = await guild.create_text_channel("📝・ник-не-по-форме", reason="Система ник-формы")
             except Exception:
                 ch = None
         if ch:
@@ -1808,40 +1808,70 @@ async def backup_cmd(interaction: discord.Interaction):
 # ============================================================================
 #  ===== ИКОНКИ РОЛЕЙ (эмодзи) — требует буст 2 уровня =====
 # ============================================================================
-ROLE_ICON_MAP = {
-    "Owner": "👑", "Coin Manager": "🪙",
-    "Dep.Owner Chilliad": "💎", "Dep.Owner Blaine": "💎",
-    "Head Recruitment Chilliad": "🎯", "Head Recruitment Blaine": "🎯",
-    "Head VZP Chilliad": "⚔️", "Head VZP Blaine": "⚔️",
-    "High Recruitment": "🔱", "High VZP": "🗡",
-    "Extendo Main Chilliad": "⭐", "Extendo Main Blaine": "⭐",
-    "Recruitment Chilliad": "📋", "Recruitment Blaine": "📋",
-    "Extendo Family Chilliad": "🩸", "Extendo Family Blaine": "🩸",
-    "VZP Chilliad": "🔥", "VZP Blaine": "🔥", "VZP": "🔥",
-    "Extendo Academy": "🎓",
-}
+LOGO_ICON_URL = THUMBNAIL_URL   # логотип фамы для иконок ролей
+
+ICON_ROLE_NAMES = [
+    "Owner", "Coin Manager", "Dep.Owner Chilliad", "Dep.Owner Blaine",
+    "Head Recruitment Chilliad", "Head Recruitment Blaine",
+    "Head VZP Chilliad", "Head VZP Blaine", "High Recruitment", "High VZP",
+    "Extendo Main Chilliad", "Extendo Main Blaine",
+    "Recruitment Chilliad", "Recruitment Blaine",
+    "Extendo Family Chilliad", "Extendo Family Blaine",
+    "VZP Chilliad", "VZP Blaine", "VZP", "Extendo Academy",
+]
 
 
-@bot.tree.command(name="иконки_ролей", description="Проставить стильные иконки ролям (нужен буст 2 ур.)")
+async def _logo_icon_bytes():
+    """Качает лого, делает квадратный PNG 128x128 для иконки роли."""
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.get(LOGO_ICON_URL) as r:
+                if r.status != 200:
+                    return None
+                raw = await r.read()
+        img = Image.open(io.BytesIO(raw))
+        try:
+            img.seek(0)  # первый кадр если gif
+        except Exception:
+            pass
+        img = img.convert("RGBA").resize((128, 128))
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        return buf.getvalue()
+    except Exception as e:
+        print(f"[icons] {e}", flush=True)
+        return None
+
+
+@bot.tree.command(name="иконки_ролей", description="Поставить логотип фамы иконкой всем ролям (буст 2 ур.)")
 async def role_icons_cmd(interaction: discord.Interaction):
     if interaction.user.id != interaction.guild.owner_id and not interaction.user.guild_permissions.administrator:
         await interaction.response.send_message("⛔ Только для админов.", ephemeral=True)
         return
-    await interaction.response.send_message("⏳ Ставлю иконки ролям…", ephemeral=True)
+    await interaction.response.send_message("⏳ Ставлю логотип иконкой ролям…", ephemeral=True)
+    icon = await _logo_icon_bytes()
+    if not icon:
+        await interaction.followup.send("⚠️ Не смог загрузить логотип (ссылка протухла?). Пришли новый PNG.", ephemeral=True)
+        return
     g = interaction.guild
     done, fail = 0, []
-    for role in g.roles:
-        emoji = ROLE_ICON_MAP.get(role.name)
-        if not emoji:
+    for name in ICON_ROLE_NAMES:
+        role = discord.utils.get(g.roles, name=name)
+        if not role:
             continue
         try:
-            await role.edit(display_icon=emoji, reason="Иконки ролей")
+            await role.edit(display_icon=icon, reason="Логотип-иконка")
             done += 1
         except Exception as e:
-            fail.append(f"{role.name}: {e}")
+            fail.append(f"{name}: {e}")
     msg = f"✅ Иконок проставлено: {done}"
     if fail:
-        msg += "\n⚠️ Не вышло (нужен буст 2 ур. / права):\n- " + "\n- ".join(fail[:6])
+        msg += "\n⚠️ Нужен буст 2 ур. / права:\n- " + "\n- ".join(fail[:5])
     try:
         await interaction.followup.send(msg, ephemeral=True)
     except Exception:
@@ -1897,13 +1927,24 @@ async def on_member_join(member):
     ch = member.guild.get_channel(wid)
     if not ch:
         return
-    buf = await make_welcome_image(member)
-    text = f"👋 Добро пожаловать, {member.mention}! Рады видеть тебя в **EXTENDO FAMILY**."
+    count = member.guild.member_count
+    emb = discord.Embed(
+        title="Д О Б Р О   П О Ж А Л О В А Т Ь",
+        color=EMBED_COLOR,
+        description=(f"# {member.mention}\n\n"
+                    f"Рады видеть тебя в **EXTENDO FAMILY** 🩸\n"
+                    f"Ты — наш **{count}-й** участник.\n\n"
+                    f"▸ Загляни в **правила**\n"
+                    f"▸ Поставь ник **по форме**\n"
+                    f"▸ Залетай в войс — погнали 🔥"))
+    emb.set_thumbnail(url=member.display_avatar.url)   # аватар новичка
+    if BANNER_URL.startswith("http"):
+        emb.set_image(url=BANNER_URL)                  # логотип фамы крупно
+    emb.set_footer(text=FOOTER_TEXT,
+                   icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
     try:
-        if buf:
-            await ch.send(content=text, file=discord.File(buf, filename="welcome.png"))
-        else:
-            await ch.send(content=text)
+        await ch.send(content=f"🎉 {member.mention}", embed=emb,
+                      allowed_mentions=discord.AllowedMentions(users=True))
     except Exception:
         pass
 
@@ -2093,12 +2134,12 @@ async def setup_blaine_cmd(interaction: discord.Interaction):
             _data.setdefault("cfg", {})["blaine_rp_logs"] = ch.id
     # отдельный канал логов VZP для Blaine
     if rec_cat:
-        existing_vzp = discord.utils.get(rec_cat.channels, name="логи-заявок-vzp")
+        existing_vzp = discord.utils.get(rec_cat.channels, name="📥・логи-заявок-vzp")
         if existing_vzp:
             _data.setdefault("cfg", {})["blaine_vzp_logs"] = existing_vzp.id
         else:
             try:
-                vlog = await g.create_text_channel("логи-заявок-vzp", category=rec_cat)
+                vlog = await g.create_text_channel("📥・логи-заявок-vzp", category=rec_cat)
                 _data.setdefault("cfg", {})["blaine_vzp_logs"] = vlog.id
             except Exception as e:
                 report.append(f"vzp-логи: {e}")
@@ -2376,10 +2417,10 @@ async def setup_war_cmd(interaction: discord.Interaction):
     # канал статы войн Chilliad — в категории VZP Chilliad (бывш. VZP)
     vzp_cat = g.get_channel(1512868053409599669)
     if vzp_cat:
-        ch = discord.utils.get(vzp_cat.channels, name="статистика-войн")
+        ch = discord.utils.get(vzp_cat.channels, name="⚔️・статистика-войн")
         if not ch:
             try:
-                ch = await g.create_text_channel("статистика-войн", category=vzp_cat)
+                ch = await g.create_text_channel("⚔️・статистика-войн", category=vzp_cat)
             except Exception as e:
                 report.append(f"война-chilliad: {e}")
                 ch = None
@@ -2389,10 +2430,10 @@ async def setup_war_cmd(interaction: discord.Interaction):
     # канал статы войн Blaine — в категории VZP Blaine
     blaine_cat = discord.utils.get(g.categories, name="VZP Blaine")
     if blaine_cat:
-        ch = discord.utils.get(blaine_cat.channels, name="статистика-войн")
+        ch = discord.utils.get(blaine_cat.channels, name="⚔️・статистика-войн")
         if not ch:
             try:
-                ch = await g.create_text_channel("статистика-войн", category=blaine_cat)
+                ch = await g.create_text_channel("⚔️・статистика-войн", category=blaine_cat)
             except Exception as e:
                 report.append(f"война-blaine: {e}")
                 ch = None
@@ -2620,13 +2661,13 @@ async def setup_all_cmd(interaction: discord.Interaction):
         except Exception as e:
             report.append(f"категория: {e}")
 
-    await ensure_text("логи-бэкап", sys_cat, private=True, save_key="backup")
-    await ensure_text("ник-напоминание", sys_cat, private=True, save_key="nickform_channel")
+    await ensure_text("🗄・логи-бэкап", sys_cat, private=True, save_key="backup")
+    await ensure_text("📝・ник-напоминание", None, private=False, save_key="nickform_channel")
 
     # публичные каналы
-    welcome = await ensure_text("добро-пожаловать", save_key="welcome")
-    honor = await ensure_text("доска-почёта", save_key="honor")
-    rules_ch = await ensure_text("правила")
+    welcome = await ensure_text("👋・добро-пожаловать", save_key="welcome")
+    honor = await ensure_text("🏅・доска-почёта", save_key="honor")
+    rules_ch = await ensure_text("📜・правила")
 
     # роль "Ник не по форме"
     nf_role = discord.utils.get(g.roles, name="Ник не по форме")
@@ -2681,6 +2722,62 @@ async def setup_all_cmd(interaction: discord.Interaction):
         pass
 
 
+# ============================================================================
+#  ===== ПРАВА КАТЕГОРИЙ (закрыть приватные нормально) =====
+# ============================================================================
+CATEGORY_ACCESS = {
+    "Recruitment Blaine": ["Owner", "Coin Manager", "Dep.Owner Blaine",
+                           "Head Recruitment Blaine", "High Recruitment",
+                           "Extendo Main Blaine", "Recruitment Blaine"],
+    "Extendo Blaine": ["Owner", "Dep.Owner Blaine", "Head Recruitment Blaine",
+                       "High Recruitment", "Extendo Main Blaine",
+                       "Recruitment Blaine", "Extendo Family Blaine"],
+    "VZP Blaine": ["Owner", "Dep.Owner Blaine", "Head VZP Blaine", "High VZP",
+                   "Extendo Main Blaine", "VZP Blaine"],
+}
+
+
+@bot.tree.command(name="fix_perms", description="Закрыть приватные категории (VZP/Blaine) нормально")
+async def fix_perms_cmd(interaction: discord.Interaction):
+    if (interaction.user.id != interaction.guild.owner_id
+            and not interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("⛔ Только для админов.", ephemeral=True)
+        return
+    await interaction.response.send_message("⏳ Настраиваю права категорий…", ephemeral=True)
+    g = interaction.guild
+    report = []
+    for cat_name, role_names in CATEGORY_ACCESS.items():
+        cat = discord.utils.get(g.categories, name=cat_name)
+        if not cat:
+            report.append(f"нет категории {cat_name}")
+            continue
+        ow = {g.default_role: discord.PermissionOverwrite(view_channel=False),
+              g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                                manage_channels=True)}
+        for rn in role_names:
+            role = discord.utils.get(g.roles, name=rn)
+            if role:
+                ow[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True,
+                                                       connect=True, speak=True)
+        try:
+            await cat.edit(overwrites=ow, reason="Фикс прав")
+            # синкаем все каналы категории под категорию
+            for ch in cat.channels:
+                try:
+                    await ch.edit(overwrites=ow)
+                except Exception:
+                    pass
+        except Exception as e:
+            report.append(f"{cat_name}: {e}")
+    msg = "✅ Права категорий закрыты (видят только нужные роли)."
+    if report:
+        msg += "\n⚠️ " + "; ".join(report[:6])
+    try:
+        await interaction.followup.send(msg, ephemeral=True)
+    except Exception:
+        pass
+
+
 @bot.event
 async def on_ready():
     if not voice_earn_loop.is_running():
@@ -2710,7 +2807,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v24 (setup_all+постоянное хранение) === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v26 (красивые названия каналов+публичный ник-канал) === запущен как {bot.user}", flush=True)
 
 
 load_data()
