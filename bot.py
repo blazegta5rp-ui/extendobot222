@@ -4,10 +4,12 @@
 # ============================================================================
 
 import os
+import io
 import json
 import random
 import asyncio
 import datetime
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import tasks
@@ -19,8 +21,8 @@ from discord.ext import tasks
 TOKEN = os.getenv("TOKEN")
 GUILD_ID = 1375220511209947257
 
-BANNER_URL = "https://cdn.discordapp.com/attachments/1495058968278728836/1560280937349120050/image.png?ex=6ad2245c&is=6ad0d2dc&hm=7d8e96c38e56aefb7c24c071717c66a10f2bf2aa3d3f546573a58f6be8fb2ad8&"
-THUMBNAIL_URL = "https://cdn.discordapp.com/attachments/1495058968278728836/1560280996270575718/preview.png?ex=6ad2246a&is=6ad0d2ea&hm=4ee66000d92c902d3ec58ddec42c80d59d3b90a06b333b470d1f47839f63ece1&"
+BANNER_URL = "https://cdn.discordapp.com/attachments/1562900235313750248/1564779291412271234/21312312312.gif?ex=6ae281c7&is=6ae13047&hm=2c833bd3ef91384f439f9409a5ee49a8ea95f9b467800991a6ea15703751dd4f&"
+THUMBNAIL_URL = "https://cdn.discordapp.com/attachments/1562900235313750248/1564779291412271234/21312312312.gif?ex=6ae281c7&is=6ae13047&hm=2c833bd3ef91384f439f9409a5ee49a8ea95f9b467800991a6ea15703751dd4f&"
 EMBED_COLOR = 0xB11226
 
 # ----------------------------------------------------------------------------
@@ -69,7 +71,8 @@ FAMILIES = {
         "submit_channel_id": 1562893949566193664,
         "logs_channel_id": 0,
         "logs_cfg_key": "blaine_vzp_logs",
-        "accepted_role_id": 1512956758719467591,        # VZP (общая)
+        "accepted_role_id": 1512956758719467591,        # запасной (до /setup_vzp_blaine)
+        "accepted_cfg_key": "vzp_blaine_role",          # роль VZP Blaine (создаётся командой)
         "recruiter_role_ids": [1510102054696259654, 1562891933561397258,
                                1562892051866198177],
         "panel_role_ids": [1562891933561397258],        # Head VZP Blaine
@@ -94,6 +97,22 @@ NIGHT_TO = 10                  # ночь до 10:00 МСК
 TOP_CHANNEL_ID = 1560278779337900164   # топ-10 + розыгрыш
 GIVE_LOG_CHANNEL_ID = 1560278970115686401  # лог выдачи монет
 GIVE_COIN_ROLE_ID = 1560277765411045518    # Coin Manager
+
+# --- Персонал (кто может варнить / смотреть историю) ---
+STAFF_ROLE_IDS = [
+    701066421240856626,    # Owner
+    1560277765411045518,   # Coin Manager
+    996791697193308302, 1562891371101032528,   # Dep.Owner Chilliad/Blaine
+    1513294574007615518, 1562891847234359507,   # Head Recruitment Chilliad/Blaine
+    1513510003607212062, 1562891933561397258,   # Head VZP Chilliad/Blaine
+    701066783498698813, 1562892051866198177,    # Extendo Main Chilliad/Blaine
+]
+# --- Ник не по форме ---
+NICKFORM_DAY = 0          # день недели проверки (0=пн)
+NICKFORM_HOUR = 12        # час МСК
+# роль/канал создаются автоматически, ID сохраняются в cfg
+import re as _re
+NICKFORM_REGEX = _re.compile(r"^[A-Za-zА-Яа-яЁё]{2,} [A-Za-zА-Яа-яЁё]{2,}")  # "Имя Фамилия"
 GIVE_COIN_CHANNEL_ID = 1560279074142691449  # канал выдачи
 SHOP_PANEL_ROLE_ID = 1560277765411045518    # Coin Manager
 
@@ -106,6 +125,24 @@ WEEKLY_HOUR = 20
 LOTTERY_PRIZE = 500            # приз победителю розыгрыша
 
 AFK_CHANNEL_ID = 996802856948617326  # афк-войс (монеты не капают)
+
+# ===== НОВЫЕ ФИЧИ — ⚠️ ЗАПОЛНИ 0 СВОИМИ ID =====
+WELCOME_CHANNEL_ID = 0              # 🔴 канал приветствия новичков (welcome-картинка)
+
+NICKFORM_ROLE_ID = 0               # 🔴 роль "Ник не по форме"
+NICKFORM_REMIND_CHANNEL_ID = 0     # 🔴 канал, где раз в неделю тегать нарушителей
+NICKFORM_REGEX = r"^[A-Za-zА-Яа-яЁё]+ [A-Za-zА-Яа-яЁё]+$"   # шаблон: Имя Фамилия
+NICKFORM_DAY = 0                   # день недели проверки (0=пн … 6=вс)
+NICKFORM_HOUR = 12                 # час проверки (МСК)
+
+HONOR_CHANNEL_ID = 0               # 🔴 канал доски почёта (0 = топ-канал)
+HONOR_HOUR = 12                    # час поста доски почёта (1-го числа месяца)
+
+BACKUP_CHANNEL_ID = 0              # 🔴 закрытый канал для авто-бэкапа data.json
+WAR_STATS_CHILLIAD_ID = 0         # 🔴 канал статистики войн Chilliad
+WAR_STATS_BLAINE_ID = 0           # 🔴 канал статистики войн Blaine
+WAR_API_URL = "https://vzp-gta5rp.com/api/events?limit=50&offset=0"  # API войн
+WAR_FAMILY_NAME = "extendo"        # как нас ищем в названиях (в нижнем регистре)
 
 # товары магазина — добавляй/меняй как нужно
 SHOP_ITEMS = [
@@ -132,7 +169,8 @@ ECONOMY_INFO = (
 )
 
 MSK = datetime.timezone(datetime.timedelta(hours=3))
-DATA_FILE = "data.json"
+_DATA_DIR = os.getenv("DATA_DIR", "")
+DATA_FILE = os.path.join(_DATA_DIR, "data.json") if _DATA_DIR else "data.json"
 
 
 def is_night():
@@ -185,6 +223,15 @@ voice_hour_earn = {}  # {uid: коинов за текущий час} — дл�
 
 def load_data():
     global _data
+    # миграция старого ./data.json в постоянную папку (чтобы не потерять монеты)
+    if _DATA_DIR and not os.path.exists(DATA_FILE) and os.path.exists("data.json"):
+        try:
+            import shutil
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            shutil.copy("data.json", DATA_FILE)
+            print("[data] мигрировал data.json в постоянную папку", flush=True)
+        except Exception as e:
+            print(f"[data] миграция: {e}", flush=True)
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -195,6 +242,7 @@ def load_data():
     _data.setdefault("last_weekly", "")
     _data.setdefault("stock", {})
     _data.setdefault("cfg", {})
+    _data.setdefault("reac", {})
     # инициализация остатков из SHOP_ITEMS (если ещё нет)
     for it in SHOP_ITEMS:
         if it.get("stock") is not None and it["id"] not in _data["stock"]:
@@ -221,6 +269,7 @@ def u(uid):
               "d_voice", "vbucket"):
         user.setdefault(k, 0)
     user.setdefault("d_day", "")
+    user.setdefault("warns", [])
     return user
 
 
@@ -253,9 +302,10 @@ class FamilyBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
-        self.add_dynamic_items(ApplyButton, AcceptButton, CallButton, DeclineButton)
+        self.add_dynamic_items(ApplyButton, AcceptButton, CallButton, DeclineButton, RelayButton)
         self.add_view(ShopView())
         self.add_view(GiveView())
+        self.add_view(ReacView())
 
 
 bot = FamilyBot()
@@ -273,6 +323,15 @@ def _has_any_role(member, role_ids):
         pass
     have = {r.id for r in member.roles}
     return any(rid in have for rid in role_ids)
+
+
+def fam_accepted_role(fam):
+    key = fam.get("accepted_cfg_key")
+    if key:
+        rid = _data.get("cfg", {}).get(key)
+        if rid:
+            return rid
+    return fam.get("accepted_role_id", 0)
 
 
 def fam_logs_channel(fam):
@@ -419,7 +478,7 @@ class ApprovalModal(discord.ui.Modal):
             return
         await finalize_accept(interaction, self.family_key, self.applicant_id,
                               self.source_message, self.discord_id.value, self.static_id.value,
-                              self.full_name.value, fam["accepted_role_id"], interaction.user)
+                              self.full_name.value, fam_accepted_role(fam), interaction.user)
 
 
 class DeclineModal(discord.ui.Modal):
@@ -630,6 +689,79 @@ class DeclineButton(discord.ui.DynamicItem[discord.ui.Button],
             DeclineModal(self.family_key, self.user_id, interaction.message))
 
 
+class RelayModal(discord.ui.Modal, title="Сообщение кандидату"):
+    def __init__(self, family_key, candidate_id):
+        super().__init__()
+        self.family_key = family_key
+        self.candidate_id = candidate_id
+        self.msg = discord.ui.TextInput(label="Текст сообщения",
+                                        style=discord.TextStyle.paragraph, max_length=1500)
+        self.add_item(self.msg)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        member = interaction.guild.get_member(self.candidate_id)
+        if not member:
+            await interaction.response.send_message("⚠️ Кандидат не найден на сервере.", ephemeral=True)
+            return
+        # запоминаем куда слать ответы кандидата
+        _data.setdefault("cfg", {}).setdefault("dm_relay", {})[str(self.candidate_id)] = interaction.channel_id
+        save_data()
+        try:
+            await member.send(f"📨 **Рекрутёр EXTENDO пишет тебе:**\n{self.msg.value}\n\n"
+                              f"_Ответь прямо здесь, в личных сообщениях — я передам рекрутёру._")
+        except discord.Forbidden:
+            await interaction.response.send_message("⚠️ У кандидата закрыты ЛС — не доставить.", ephemeral=True)
+            return
+        emb = discord.Embed(color=0x3498DB,
+                            description=f"📤 {interaction.user.mention} → **{member}**:\n{self.msg.value}")
+        await interaction.channel.send(embed=emb)
+        await interaction.response.send_message("✅ Отправлено кандидату.", ephemeral=True)
+
+
+class RelayButton(discord.ui.DynamicItem[discord.ui.Button],
+                  template=r"relaymsg:(?P<fam>\w+):(?P<uid>\d+)"):
+    def __init__(self, family_key, user_id):
+        self.family_key = family_key
+        self.user_id = user_id
+        super().__init__(discord.ui.Button(label="💬 Написать кандидату",
+                         style=discord.ButtonStyle.secondary,
+                         custom_id=f"relaymsg:{family_key}:{user_id}"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(match["fam"], int(match["uid"]))
+
+    async def callback(self, interaction: discord.Interaction):
+        if not member_can_review(interaction.user, self.family_key):
+            await interaction.response.send_message("⛔ Нет прав.", ephemeral=True)
+            return
+        await interaction.response.send_modal(RelayModal(self.family_key, self.user_id))
+
+
+@bot.event
+async def on_message(message):
+    # ответы кандидата в ЛС -> в канал заявок
+    if message.author.bot or message.guild is not None:
+        return
+    relay = _data.get("cfg", {}).get("dm_relay", {})
+    ch_id = relay.get(str(message.author.id))
+    if not ch_id:
+        return
+    ch = bot.get_channel(ch_id)
+    if not ch:
+        return
+    emb = discord.Embed(color=0x2ECC71,
+                        description=f"💬 **{message.author}** (кандидат) ответил:\n{message.content or '—'}")
+    if message.attachments:
+        emb.add_field(name="Вложения", value="\n".join(a.url for a in message.attachments), inline=False)
+    emb.set_footer(text=f"ID: {message.author.id}")
+    try:
+        await ch.send(embed=emb)
+        await message.add_reaction("✅")
+    except Exception:
+        pass
+
+
 async def post_panel(interaction, family_key):
     if not member_can_panel(interaction.user, family_key):
         await interaction.response.send_message("⛔ У тебя нет прав выкладывать эту панель.", ephemeral=True)
@@ -715,6 +847,250 @@ async def _before_voice():
 # ============================================================================
 #  ===== ЭКОНОМИКА: БАЛАНС / ВЫДАЧА =====
 # ============================================================================
+def is_staff(member):
+    if not isinstance(member, discord.Member):
+        return False
+    if member.guild and member.id == member.guild.owner_id:
+        return True
+    if member.guild_permissions.administrator:
+        return True
+    return _has_any_role(member, STAFF_ROLE_IDS)
+
+
+# ----------------------------------------------------------------------------
+#  /профиль — личный кабинет
+# ----------------------------------------------------------------------------
+@bot.tree.command(name="профиль", description="Личный кабинет участника")
+@app_commands.describe(участник="Чей профиль (по умолчанию — свой)")
+async def profile_cmd(interaction: discord.Interaction, участник: discord.Member = None):
+    m = участник or interaction.user
+    data = u(m.id)
+    top_role = m.top_role.name if m.top_role and m.top_role.name != "@everyone" else "—"
+    joined = m.joined_at.strftime("%d.%m.%Y") if m.joined_at else "—"
+    warns = data.get("warns", [])
+    embed = discord.Embed(title=f"📇  ПРОФИЛЬ · {m.display_name}", color=EMBED_COLOR)
+    embed.set_thumbnail(url=m.display_avatar.url)
+    embed.add_field(name="👤 Роль", value=top_role, inline=True)
+    embed.add_field(name="📅 С нами с", value=joined, inline=True)
+    embed.add_field(name="🪙 Монеты", value=fmt_coins(data["balance"]), inline=True)
+    embed.add_field(name="👥 Принято", value=str(data["accepted"]), inline=True)
+    embed.add_field(name="🎙 В войсах", value=fmt_voice(data["voice_sec"]), inline=True)
+    embed.add_field(name="⚠️ Варнов", value=str(len(warns)), inline=True)
+    embed.set_footer(text=FOOTER_TEXT,
+                     icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+    await interaction.response.send_message(embed=embed)
+
+
+# ----------------------------------------------------------------------------
+#  Варны / история
+# ----------------------------------------------------------------------------
+@bot.tree.command(name="варн", description="Выдать предупреждение участнику")
+@app_commands.describe(участник="Кому", причина="За что")
+async def warn_cmd(interaction: discord.Interaction, участник: discord.Member, причина: str):
+    if not is_staff(interaction.user):
+        await interaction.response.send_message("⛔ Нет прав.", ephemeral=True)
+        return
+    data = u(участник.id)
+    data.setdefault("warns", []).append({
+        "by": interaction.user.id,
+        "reason": причина,
+        "date": datetime.datetime.now(MSK).strftime("%d.%m.%Y %H:%M"),
+    })
+    save_data()
+    n = len(data["warns"])
+    try:
+        await участник.send(f"⚠️ Тебе выдан **варн** в EXTENDO.\nПричина: {причина}\nВсего варнов: {n}")
+    except discord.Forbidden:
+        pass
+    await interaction.response.send_message(
+        f"⚠️ Варн выдан {участник.mention} (всего: {n}).\nПричина: {причина}", ephemeral=True)
+
+
+@bot.tree.command(name="снятьварн", description="Снять последний варн")
+@app_commands.describe(участник="С кого снять")
+async def unwarn_cmd(interaction: discord.Interaction, участник: discord.Member):
+    if not is_staff(interaction.user):
+        await interaction.response.send_message("⛔ Нет прав.", ephemeral=True)
+        return
+    data = u(участник.id)
+    warns = data.setdefault("warns", [])
+    if not warns:
+        await interaction.response.send_message("У участника нет варнов.", ephemeral=True)
+        return
+    removed = warns.pop()
+    save_data()
+    await interaction.response.send_message(
+        f"✅ Снят варн с {участник.mention} (осталось: {len(warns)}).\n"
+        f"Был: {removed['reason']}", ephemeral=True)
+
+
+@bot.tree.command(name="история", description="История варнов участника")
+@app_commands.describe(участник="Чья история")
+async def history_cmd(interaction: discord.Interaction, участник: discord.Member):
+    if not is_staff(interaction.user) and участник.id != interaction.user.id:
+        await interaction.response.send_message("⛔ Нет прав.", ephemeral=True)
+        return
+    data = u(участник.id)
+    warns = data.get("warns", [])
+    embed = discord.Embed(title=f"📋 История · {участник.display_name}", color=EMBED_COLOR)
+    embed.set_thumbnail(url=участник.display_avatar.url)
+    if warns:
+        lines = [f"**{i+1}.** {w['date']} — {w['reason']} (от <@{w['by']}>)"
+                 for i, w in enumerate(warns)]
+        embed.add_field(name=f"⚠️ Варны ({len(warns)})", value="\n".join(lines)[:1024], inline=False)
+    else:
+        embed.add_field(name="⚠️ Варны", value="нет", inline=False)
+    embed.set_footer(text=FOOTER_TEXT,
+                     icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ----------------------------------------------------------------------------
+#  НИК НЕ ПО ФОРМЕ — авто-создание роли/канала + проверка
+# ----------------------------------------------------------------------------
+async def ensure_nickform(guild):
+    cfg = _data.setdefault("cfg", {})
+    role = guild.get_role(cfg.get("nickform_role", 0))
+    if role is None:
+        role = discord.utils.get(guild.roles, name="Ник не по форме")
+        if role is None:
+            try:
+                role = await guild.create_role(name="Ник не по форме", colour=discord.Colour(0xE67E22),
+                                               reason="Система ник-формы")
+            except Exception:
+                role = None
+        if role:
+            cfg["nickform_role"] = role.id
+    ch = guild.get_channel(cfg.get("nickform_channel", 0))
+    if ch is None:
+        ch = discord.utils.get(guild.text_channels, name="ник-не-по-форме")
+        if ch is None:
+            try:
+                ch = await guild.create_text_channel("ник-не-по-форме", reason="Система ник-формы")
+            except Exception:
+                ch = None
+        if ch:
+            cfg["nickform_channel"] = ch.id
+    save_data()
+    return role, ch
+
+
+async def do_nickform_check(guild):
+    role, ch = await ensure_nickform(guild)
+    if not role or not ch:
+        return 0
+    violators = []
+    for m in guild.members:
+        if m.bot:
+            continue
+        name = m.nick or m.name
+        if not NICKFORM_REGEX.match(name):
+            violators.append(m)
+            if role not in m.roles:
+                try:
+                    await m.add_roles(role, reason="Ник не по форме")
+                except Exception:
+                    pass
+    if violators:
+        mentions = " ".join(v.mention for v in violators[:50])
+        emb = discord.Embed(
+            title="⚠️ НИК НЕ ПО ФОРМЕ",
+            description=("У вас ник **не по форме** (нужно: `Имя Фамилия`).\n"
+                         "У вас есть **24 часа**, чтобы исправить ник, иначе — меры.\n\n"
+                         f"Нарушителей: **{len(violators)}**"),
+            color=0xE67E22, timestamp=datetime.datetime.now(MSK))
+        emb.set_footer(text=FOOTER_TEXT,
+                       icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+        try:
+            await ch.send(content=mentions, embed=emb,
+                          allowed_mentions=discord.AllowedMentions(users=True))
+        except Exception:
+            pass
+    return len(violators)
+
+
+@bot.tree.command(name="проверка_ников", description="Проверить ники по форме сейчас")
+async def nickcheck_cmd(interaction: discord.Interaction):
+    if not is_staff(interaction.user):
+        await interaction.response.send_message("⛔ Нет прав.", ephemeral=True)
+        return
+    await interaction.response.send_message("⏳ Проверяю ники…", ephemeral=True)
+    n = await do_nickform_check(interaction.guild)
+    await interaction.followup.send(f"✅ Проверка завершена. Нарушителей: **{n}**", ephemeral=True)
+
+
+@tasks.loop(hours=24)
+async def nickform_loop():
+    now = datetime.datetime.now(MSK)
+    if now.weekday() != NICKFORM_DAY or now.hour != NICKFORM_HOUR:
+        return
+    stamp = now.strftime("%Y-%W-nick")
+    if _data.get("cfg", {}).get("last_nick") == stamp:
+        return
+    _data.setdefault("cfg", {})["last_nick"] = stamp
+    save_data()
+    for g in bot.guilds:
+        await do_nickform_check(g)
+
+
+@nickform_loop.before_loop
+async def _before_nickform():
+    await bot.wait_until_ready()
+
+
+def build_honor_embed():
+    users = _data["users"]
+    top_acc = sorted(users.items(), key=lambda kv: kv[1].get("accepted", 0), reverse=True)
+    top_voice = sorted(users.items(), key=lambda kv: kv[1].get("voice_sec", 0), reverse=True)
+    embed = discord.Embed(title="🏅  ДОСКА ПОЧЁТА  ·  EXTENDO FAMILY",
+                          color=0xF1C40F, timestamp=datetime.datetime.now(MSK),
+                          description="Лучшие за всё время. Спасибо за вклад! 🫡")
+    medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
+    acc = [f"{medals[i]} <@{uid}> — **{d.get('accepted',0)}** принятых"
+           for i, (uid, d) in enumerate(top_acc[:10]) if d.get("accepted", 0) > 0]
+    voi = [f"{medals[i]} <@{uid}> — **{fmt_voice(d.get('voice_sec',0))}**"
+           for i, (uid, d) in enumerate(top_voice[:10]) if d.get("voice_sec", 0) > 0]
+    embed.add_field(name="👥  Лучшие рекрутёры", value="\n".join(acc) or "—", inline=False)
+    embed.add_field(name="🎙  Больше всех в войсе", value="\n".join(voi) or "—", inline=False)
+    if THUMBNAIL_URL.startswith("http"):
+        embed.set_thumbnail(url=THUMBNAIL_URL)
+    if BANNER_URL.startswith("http"):
+        embed.set_image(url=BANNER_URL)
+    embed.set_footer(text=FOOTER_TEXT,
+                     icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+    return embed
+
+
+@tasks.loop(hours=1)
+async def honor_loop():
+    now = datetime.datetime.now(MSK)
+    if now.day != 1 or now.hour != HONOR_HOUR:
+        return
+    stamp = now.strftime("%Y-%m")
+    if _data.get("cfg", {}).get("last_honor") == stamp:
+        return
+    _data.setdefault("cfg", {})["last_honor"] = stamp
+    save_data()
+    ch = bot.get_channel(HONOR_CHANNEL_ID or _data.get("cfg", {}).get("honor", 0) or TOP_CHANNEL_ID)
+    if ch:
+        try:
+            await ch.send(content="@everyone 🏅 **Доска почёта месяца!**",
+                          embed=build_honor_embed(),
+                          allowed_mentions=discord.AllowedMentions(everyone=True))
+        except Exception:
+            pass
+
+
+@honor_loop.before_loop
+async def _before_honor():
+    await bot.wait_until_ready()
+
+
+@bot.tree.command(name="доска_почёта", description="Показать доску почёта сейчас")
+async def honor_cmd(interaction):
+    await interaction.response.send_message(embed=build_honor_embed())
+
+
 @bot.tree.command(name="баланс", description="Показать свой баланс и статистику")
 async def balance_cmd(interaction):
     user = u(interaction.user.id)
@@ -1289,6 +1665,249 @@ async def on_app_command_error(interaction: discord.Interaction, error):
         pass
 
 
+# ============================================================================
+#  ===== ПРАВИЛА =====
+# ============================================================================
+RULES_BLOCKS = [
+    ("💬  1. КОММУНИКАЦИЯ", [
+        "1.1 Оскорбления в сторону софама запрещены.",
+        "1.2 Упоминания родни в сторону софама запрещены.",
+        "1.3 Оскорбление нации — **2 варна сразу!**",
+        "1.4 Обман софама — **ЧС фамы**.",
+        "1.5 Игнор старшего состава (OWNER, Dep.Owner, Recruitment).",
+        "1.6 Залив жалобы на софама запрещён — конфликты решает СС (п.1.5), "
+        "нужен откат/доказательства.",
+    ]),
+    ("🚗  2. АВТОПАРК", [
+        "2.1 Перед ресом авто семьи — спроси в чат (нет ответа минуту — ресай).",
+        "2.2 Действия с водителем запрещены (тайзер, отбор обманом). "
+        "Можно, если сам отдаёт руль.",
+        "2.3 Нельзя оставлять авто с бензином <40% — **15к на банк орги**.",
+        "2.4 Нельзя ресать занятое авто (можно, если игрок вышел/не отвечает 5+ мин).",
+    ]),
+    ("🏛  3. ТИТУЛ (ОСОБНЯК)", [
+        "3.1 Запрещено открывать титул (стрельба с территории).",
+        "3.2 Запрещена стрельба за титулом и уход в него.",
+        "3.3 Фан-гейм запрещён, если сторона не согласна.",
+    ]),
+    ("⚔️  4. ОРГАНИЗАЦИЯ / ВЗП", [
+        "4.1 Прыгать в метку «Войны семей» запрещено (можно, если вписан в терру).",
+        "4.2 Опоздание в терру — **ранг/варн**.",
+        "4.3 Реакция на атаку/дефф без прыжка (будучи вписанным) — **ранг/варн**.",
+        "4.4 Слив склада — **ЧС фамы**.",
+        "4.5 Обход систем семьи запрещён.",
+        "4.6 Крики/мешание коллеру — **ранг/варн**.",
+    ]),
+    ("📑  5. КОНТРАКТЫ", [
+        "5.1 Минимум людей для пика — **от 3** (меньше — варн).",
+        "5.2 Перед контрактом собери людей / будь уверен, что выполнишь.",
+    ]),
+    ("🧾  СНЯТИЕ ВАРНА", [
+        "Снять варн — **30к на счёт орги** (через банк).",
+        "При 3 варнах — **3 дня** на снятие всех (**100к на банк**). "
+        "Не снял — **кик с фамы**.",
+    ]),
+]
+
+
+@bot.tree.command(name="правила", description="Выложить правила семьи в этот канал")
+async def rules_cmd(interaction: discord.Interaction):
+    if (interaction.user.id != interaction.guild.owner_id
+            and not interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("⛔ Только для админов.", ephemeral=True)
+        return
+    head = discord.Embed(
+        title="📜  ПРАВИЛА СЕМЬИ  ·  EXTENDO FAMILY",
+        color=EMBED_COLOR,
+        description=("Соблюдение правил обязательно для каждого участника.\n"
+                     "Все наказания — на усмотрение СС (п. 1.5).\n"
+                     "Правила дополняются по мере необходимости."))
+    if BANNER_URL.startswith("http"):
+        head.set_image(url=BANNER_URL)
+    if THUMBNAIL_URL.startswith("http"):
+        head.set_thumbnail(url=THUMBNAIL_URL)
+    await interaction.channel.send(embed=head)
+    for title, lines in RULES_BLOCKS:
+        emb = discord.Embed(title=title, color=EMBED_COLOR,
+                            description="\n".join(lines))
+        emb.set_footer(text=FOOTER_TEXT,
+                       icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+        await interaction.channel.send(embed=emb)
+    await interaction.response.send_message("✅ Правила выложены.", ephemeral=True)
+
+
+# ============================================================================
+#  ===== АВТО-БЭКАП ДАННЫХ В КАНАЛ (замена БД) =====
+# ============================================================================
+@tasks.loop(hours=6)
+async def backup_loop():
+    bid = BACKUP_CHANNEL_ID or _data.get("cfg", {}).get("backup", 0)
+    if not bid:
+        return
+    ch = bot.get_channel(bid)
+    if not ch:
+        return
+    try:
+        if os.path.exists(DATA_FILE):
+            await ch.send(content=f"🗄 Бэкап {datetime.datetime.now(MSK).strftime('%d.%m.%Y %H:%M')}",
+                          file=discord.File(DATA_FILE))
+    except Exception as e:
+        print(f"[backup] {e}", flush=True)
+
+
+@backup_loop.before_loop
+async def _before_backup():
+    await bot.wait_until_ready()
+
+
+async def restore_from_backup():
+    """Если data.json пуст/отсутствует — тянем последний бэкап из канала."""
+    bid = BACKUP_CHANNEL_ID or _data.get("cfg", {}).get("backup", 0)
+    if not bid:
+        return
+    if os.path.exists(DATA_FILE) and len(_data.get("users", {})) > 0:
+        return
+    ch = bot.get_channel(bid)
+    if not ch:
+        return
+    try:
+        async for msg in ch.history(limit=20):
+            if msg.attachments:
+                att = msg.attachments[0]
+                if att.filename.endswith(".json"):
+                    raw = await att.read()
+                    import json as _j
+                    data = _j.loads(raw.decode("utf-8"))
+                    _data.clear()
+                    _data.update(data)
+                    save_data()
+                    print("[backup] данные восстановлены из бэкапа ✅", flush=True)
+                    return
+    except Exception as e:
+        print(f"[backup] restore: {e}", flush=True)
+
+
+@bot.tree.command(name="бэкап", description="Сделать бэкап данных сейчас")
+async def backup_cmd(interaction: discord.Interaction):
+    if interaction.user.id != interaction.guild.owner_id and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("⛔ Только для админов.", ephemeral=True)
+        return
+    bid = BACKUP_CHANNEL_ID or _data.get("cfg", {}).get("backup", 0)
+    if not bid:
+        await interaction.response.send_message("⚠️ Бэкап-канал не настроен (запусти /setup_all).", ephemeral=True)
+        return
+    ch = bot.get_channel(bid)
+    try:
+        await ch.send(content=f"🗄 Ручной бэкап {datetime.datetime.now(MSK).strftime('%d.%m.%Y %H:%M')}",
+                      file=discord.File(DATA_FILE))
+        await interaction.response.send_message("✅ Бэкап сделан.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
+
+
+# ============================================================================
+#  ===== ИКОНКИ РОЛЕЙ (эмодзи) — требует буст 2 уровня =====
+# ============================================================================
+ROLE_ICON_MAP = {
+    "Owner": "👑", "Coin Manager": "🪙",
+    "Dep.Owner Chilliad": "💎", "Dep.Owner Blaine": "💎",
+    "Head Recruitment Chilliad": "🎯", "Head Recruitment Blaine": "🎯",
+    "Head VZP Chilliad": "⚔️", "Head VZP Blaine": "⚔️",
+    "High Recruitment": "🔱", "High VZP": "🗡",
+    "Extendo Main Chilliad": "⭐", "Extendo Main Blaine": "⭐",
+    "Recruitment Chilliad": "📋", "Recruitment Blaine": "📋",
+    "Extendo Family Chilliad": "🩸", "Extendo Family Blaine": "🩸",
+    "VZP Chilliad": "🔥", "VZP Blaine": "🔥", "VZP": "🔥",
+    "Extendo Academy": "🎓",
+}
+
+
+@bot.tree.command(name="иконки_ролей", description="Проставить стильные иконки ролям (нужен буст 2 ур.)")
+async def role_icons_cmd(interaction: discord.Interaction):
+    if interaction.user.id != interaction.guild.owner_id and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("⛔ Только для админов.", ephemeral=True)
+        return
+    await interaction.response.send_message("⏳ Ставлю иконки ролям…", ephemeral=True)
+    g = interaction.guild
+    done, fail = 0, []
+    for role in g.roles:
+        emoji = ROLE_ICON_MAP.get(role.name)
+        if not emoji:
+            continue
+        try:
+            await role.edit(display_icon=emoji, reason="Иконки ролей")
+            done += 1
+        except Exception as e:
+            fail.append(f"{role.name}: {e}")
+    msg = f"✅ Иконок проставлено: {done}"
+    if fail:
+        msg += "\n⚠️ Не вышло (нужен буст 2 ур. / права):\n- " + "\n- ".join(fail[:6])
+    try:
+        await interaction.followup.send(msg, ephemeral=True)
+    except Exception:
+        pass
+
+
+async def make_welcome_image(member):
+    """Генерит приветственную картинку. Возвращает BytesIO или None."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        return None
+    try:
+        W, H = 1000, 350
+        img = Image.new("RGB", (W, H), (18, 18, 20))
+        draw = ImageDraw.Draw(img)
+        # красная рамка
+        draw.rectangle([6, 6, W - 7, H - 7], outline=(177, 18, 38), width=5)
+        # аватар по центру слева, кругом
+        try:
+            avatar_bytes = await member.display_avatar.replace(size=256).read()
+            av = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA").resize((200, 200))
+            mask = Image.new("L", (200, 200), 0)
+            ImageDraw.Draw(mask).ellipse([0, 0, 200, 200], fill=255)
+            img.paste(av, (60, 75), mask)
+            draw.ellipse([60, 75, 260, 275], outline=(177, 18, 38), width=5)
+        except Exception:
+            pass
+        # шрифты (дефолтные, чтобы не зависеть от файлов)
+        try:
+            big = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
+            mid = ImageFont.truetype("DejaVuSans-Bold.ttf", 34)
+            small = ImageFont.truetype("DejaVuSans.ttf", 26)
+        except Exception:
+            big = mid = small = ImageFont.load_default()
+        draw.text((300, 100), "ДОБРО ПОЖАЛОВАТЬ", font=big, fill=(255, 255, 255))
+        name = member.display_name[:22]
+        draw.text((300, 160), name, font=mid, fill=(230, 60, 80))
+        draw.text((300, 215), "EXTENDO FAMILY", font=small, fill=(150, 150, 150))
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
+
+
+@bot.event
+async def on_member_join(member):
+    wid = WELCOME_CHANNEL_ID or _data.get("cfg", {}).get("welcome", 0)
+    if not wid or member.bot:
+        return
+    ch = member.guild.get_channel(wid)
+    if not ch:
+        return
+    buf = await make_welcome_image(member)
+    text = f"👋 Добро пожаловать, {member.mention}! Рады видеть тебя в **EXTENDO FAMILY**."
+    try:
+        if buf:
+            await ch.send(content=text, file=discord.File(buf, filename="welcome.png"))
+        else:
+            await ch.send(content=text)
+    except Exception:
+        pass
+
+
 @bot.tree.command(name="айди", description="Показать ID всех ролей и каналов сервера")
 async def ids_cmd(interaction: discord.Interaction):
     # только владелец или Coin Manager / head-роли — чтобы не светить всем
@@ -1366,6 +1985,85 @@ async def _mirror_category(guild, src_cat_id, new_name):
     return newcat, created
 
 
+VZP_ROLE_CHILLIAD = 1512956758719467591   # роль VZP (станет "VZP Chilliad")
+SRC_VZP_CAT = 1512868053409599669         # категория VZP (источник)
+
+
+@bot.tree.command(name="setup_vzp_blaine", description="Создать VZP Blaine (роль + категория)")
+async def setup_vzp_blaine_cmd(interaction: discord.Interaction):
+    if (interaction.user.id != interaction.guild.owner_id
+            and not interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("⛔ Только для админов/владельца.", ephemeral=True)
+        return
+    await interaction.response.send_message("⏳ Создаю VZP Blaine…", ephemeral=True)
+    g = interaction.guild
+    report = []
+
+    # 1) переименовать VZP -> VZP Chilliad
+    vzp = g.get_role(VZP_ROLE_CHILLIAD)
+    if vzp and vzp.name != "VZP Chilliad":
+        try:
+            await vzp.edit(name="VZP Chilliad", reason="Разделение на Chilliad/Blaine")
+        except Exception as e:
+            report.append(f"переименование VZP: {e}")
+
+    # 2) создать роль VZP Blaine (копия VZP) — если ещё нет
+    vzp_blaine_id = _data.get("cfg", {}).get("vzp_blaine_role")
+    vzp_blaine = g.get_role(vzp_blaine_id) if vzp_blaine_id else None
+    if not vzp_blaine:
+        vzp_blaine = discord.utils.get(g.roles, name="VZP Blaine")
+    if not vzp_blaine and vzp:
+        try:
+            vzp_blaine = await g.create_role(
+                name="VZP Blaine", colour=vzp.colour,
+                permissions=vzp.permissions, hoist=vzp.hoist,
+                mentionable=vzp.mentionable, reason="VZP Blaine")
+        except Exception as e:
+            report.append(f"создание роли: {e}")
+    if vzp_blaine:
+        _data.setdefault("cfg", {})["vzp_blaine_role"] = vzp_blaine.id
+
+    # 3) зеркалим категорию VZP -> VZP Blaine (роли remap + VZP->VZP Blaine)
+    role_map = dict(BLAINE_ROLE_MAP)
+    if vzp_blaine:
+        role_map[VZP_ROLE_CHILLIAD] = vzp_blaine.id
+    # не дублировать
+    if not discord.utils.get(g.categories, name="VZP Blaine"):
+        src_cat = g.get_channel(SRC_VZP_CAT)
+        if src_cat:
+            ow = {}
+            for target, perm in src_cat.overwrites.items():
+                if isinstance(target, discord.Role) and target.id in role_map:
+                    nt = g.get_role(role_map[target.id])
+                    if nt:
+                        ow[nt] = perm
+                else:
+                    ow[target] = perm
+            try:
+                newcat = await g.create_category("VZP Blaine", overwrites=ow)
+                for ch in src_cat.channels:
+                    try:
+                        if isinstance(ch, discord.VoiceChannel):
+                            await g.create_voice_channel(ch.name, category=newcat)
+                        else:
+                            await g.create_text_channel(ch.name, category=newcat)
+                    except Exception as e:
+                        report.append(f"канал {ch.name}: {e}")
+            except Exception as e:
+                report.append(f"категория: {e}")
+
+    save_data()
+    msg = (f"✅ **VZP Blaine готов!**\n"
+           f"Роль VZP Blaine: {vzp_blaine.mention if vzp_blaine else '—'}\n"
+           "Роль VZP переименована в VZP Chilliad. Категория VZP Blaine создана.")
+    if report:
+        msg += "\n⚠️ " + "; ".join(report[:6])
+    try:
+        await interaction.followup.send(msg, ephemeral=True)
+    except Exception:
+        pass
+
+
 @bot.tree.command(name="setup_blaine", description="Создать структуру Extendo Blaine (роли, каналы, права)")
 async def setup_blaine_cmd(interaction: discord.Interaction):
     if (interaction.user.id != interaction.guild.owner_id
@@ -1431,6 +2129,558 @@ async def setup_blaine_cmd(interaction: discord.Interaction):
         pass
 
 
+# ============================================================================
+#  ===== СТАТИСТИКА ВОЙН (ВС) — парсер + карточка в стиле Extendo =====
+# ============================================================================
+def _norm(s):
+    return str(s or "").lower().replace(" ", "").replace("x", "")
+
+
+def _wfont(sz, bold=True):
+    from PIL import ImageFont
+    try:
+        return ImageFont.truetype(f"DejaVuSans{'-Bold' if bold else ''}.ttf", sz)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def make_war_image(enemy, location, server, our_side, win, time_str):
+    """Простая карточка (запасная, без ростера)."""
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return None
+    try:
+        W, H = 1000, 420
+        img = Image.new("RGB", (W, H), (14, 14, 16))
+        d = ImageDraw.Draw(img)
+        accent = (46, 204, 113) if win else (231, 76, 60)
+        d.rectangle([5, 5, W - 6, H - 6], outline=accent, width=6)
+        d.rectangle([0, 0, W, 70], fill=(177, 18, 38))
+        d.text((30, 14), "РЕЗУЛЬТАТ ВОЙНЫ СЕМЕЙ", font=_wfont(46), fill=(255, 255, 255))
+        d.text((40, 120), "EXTENDO", font=_wfont(38), fill=(230, 60, 80))
+        d.text((320, 128), "VS", font=_wfont(28, False), fill=(150, 150, 150))
+        d.text((400, 120), str(enemy)[:20], font=_wfont(38), fill=(255, 255, 255))
+        side_txt = "АТАКА" if our_side == "atk" else "ДЕФ"
+        d.text((40, 210), f"Локация:  {location}", font=_wfont(28, False), fill=(180, 180, 180))
+        d.text((40, 250), f"Сервер:  {server}     Время:  {time_str}", font=_wfont(28, False), fill=(180, 180, 180))
+        d.text((40, 290), f"Наша сторона:  {side_txt}", font=_wfont(28, False), fill=(180, 180, 180))
+        d.text((40, 335), "ПОБЕДА" if win else "ПОРАЖЕНИЕ", font=_wfont(60), fill=accent)
+        buf = io.BytesIO(); img.save(buf, "PNG"); buf.seek(0)
+        return buf
+    except Exception:
+        return None
+
+
+def make_war_card(p):
+    """Детальная карточка войны (ростер + урон) в стиле Extendo."""
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return None
+    try:
+        our, enemy, win = p["our"], p["enemy"], p["win"]
+        rows = max(len(our["players"]), len(enemy["players"]), 1)
+        W, H = 1500, 300 + rows * 34 + 40
+        img = Image.new("RGB", (W, H), (13, 13, 15))
+        d = ImageDraw.Draw(img)
+        green, red, grey, white = (46, 204, 113), (231, 76, 60), (150, 150, 150), (240, 240, 240)
+        accent = green if win else red
+        d.rectangle([0, 0, W, 78], fill=(177, 18, 38))
+        d.text((34, 16), "РЕЗУЛЬТАТ ВОЙНЫ СЕМЕЙ", font=_wfont(44), fill=(255, 255, 255))
+        res = "ПОБЕДА" if win else "ПОРАЖЕНИЕ"
+        rw = d.textlength(res, font=_wfont(40))
+        d.text((W - rw - 34, 18), res, font=_wfont(40), fill=(255, 255, 255))
+        d.text((34, 96), str(p["location"])[:48], font=_wfont(30), fill=white)
+        d.text((34, 140), f"Сервер: {p['server']}        Время: {p['time']}", font=_wfont(26, False), fill=grey)
+        d.rectangle([5, 5, W - 6, H - 6], outline=accent, width=5)
+
+        def panel(x0, team, is_win, color):
+            pw = 700
+            d.rectangle([x0, 190, x0 + pw, 240], fill=(26, 26, 30))
+            d.text((x0 + 18, 198), str(team["name"])[:24], font=_wfont(32), fill=color)
+            if is_win:
+                bw = d.textlength("WINNER", font=_wfont(22))
+                d.rectangle([x0 + pw - bw - 40, 200, x0 + pw - 14, 232], fill=green)
+                d.text((x0 + pw - bw - 27, 204), "WINNER", font=_wfont(22), fill=(0, 0, 0))
+            d.text((x0 + 18, 250), f"Киллы: {team['kills']}    Урон: {team['damage']}    ХС: {team['hs']}",
+                   font=_wfont(24), fill=white)
+            cols = [("ИГРОК", x0 + 18), ("K", x0 + 330), ("SHOTS", x0 + 390),
+                    ("DMG", x0 + 480), ("HIT%", x0 + 570), ("HS%", x0 + 650)]
+            for name, cx in cols:
+                d.text((cx, 292), name, font=_wfont(18, False), fill=grey)
+            y = 322
+            for pl in team["players"][:10]:
+                d.text((x0 + 18, y), str(pl["name"])[:20], font=_wfont(20, False), fill=white)
+                d.text((x0 + 330, y), str(pl["k"]), font=_wfont(20, False), fill=accent if pl["k"] else grey)
+                d.text((x0 + 390, y), str(pl["shots"]), font=_wfont(20, False), fill=grey)
+                d.text((x0 + 480, y), str(pl["dmg"]), font=_wfont(20, False), fill=white)
+                d.text((x0 + 570, y), f"{pl['hit']}%", font=_wfont(20, False), fill=grey)
+                d.text((x0 + 650, y), f"{pl['hs']}%", font=_wfont(20, False), fill=grey)
+                y += 34
+
+        panel(30, our, win, green if win else red)
+        panel(770, enemy, not win, red if win else green)
+        buf = io.BytesIO(); img.save(buf, "PNG"); buf.seek(0)
+        return buf
+    except Exception as e:
+        print(f"[war] card: {e}", flush=True)
+        return None
+
+
+def _players_of(obj):
+    if isinstance(obj, list):
+        return obj
+    if isinstance(obj, dict):
+        for k in ("players", "members", "roster", "stats", "list"):
+            if isinstance(obj.get(k), list):
+                return obj[k]
+    return []
+
+
+def _pget(pl, *keys, default=0):
+    for k in keys:
+        if isinstance(pl, dict) and pl.get(k) is not None:
+            return pl[k]
+    return default
+
+
+def _team_from(event, side_prefix, name):
+    arr = None
+    for key in (f"{side_prefix}Players", f"{side_prefix}_players", side_prefix,
+                f"{side_prefix}Team", f"{side_prefix}_team", f"{side_prefix}Stats"):
+        pl = _players_of(event.get(key))
+        if pl:
+            arr = pl
+            break
+    arr = arr or []
+    players = []
+    for pl in arr:
+        players.append({
+            "name": _pget(pl, "name", "nickname", "charName", "playerName", "nick", default="—"),
+            "k": _pget(pl, "kills", "k", "killCount", default=0),
+            "shots": _pget(pl, "shots", "shotCount", "shot", default=0),
+            "dmg": _pget(pl, "damage", "dmg", "damageDealt", default=0),
+            "hit": _pget(pl, "hitPercent", "hit", "accuracy", "hitPct", default=0),
+            "hs": _pget(pl, "hsPercent", "hs", "headshotPercent", "hsPct", default=0),
+        })
+    totK = sum(int(x["k"] or 0) for x in players)
+    totD = sum(int(x["dmg"] or 0) for x in players)
+    return {"name": name, "kills": totK, "damage": f"{totD:,}".replace(",", " "),
+            "hs": event.get(f"{side_prefix}Hs") or "-", "players": players}
+
+
+@tasks.loop(minutes=3)
+async def war_loop():
+    cfg = _data.setdefault("cfg", {})
+    chil_id = WAR_STATS_CHILLIAD_ID or cfg.get("war_chilliad", 0)
+    blaine_id = WAR_STATS_BLAINE_ID or cfg.get("war_blaine", 0)
+    if not (chil_id or blaine_id):
+        return
+    seen = cfg.setdefault("war_seen", [])
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": "Mozilla/5.0"}) as s:
+            async with s.get(WAR_API_URL) as r:
+                if r.status != 200:
+                    return
+                raw = await r.json(content_type=None)
+    except Exception as e:
+        print(f"[war] fetch: {e}", flush=True)
+        return
+    events = raw if isinstance(raw, list) else raw.get("data", raw.get("events", []))
+    if not isinstance(events, list):
+        return
+    for e in events:
+        if not isinstance(e, dict):
+            continue
+        if e.get("endedAt") is None:
+            continue
+        eid = str(e.get("eventId") or e.get("id") or "")
+        if not eid or eid in seen:
+            continue
+        atk = e.get("attackerName") or ""
+        dfn = e.get("defenderName") or ""
+        if WAR_FAMILY_NAME not in _norm(atk) and WAR_FAMILY_NAME not in _norm(dfn):
+            continue
+        if not cfg.get("war_logged"):
+            print("[war] RAW EVENT >>> " + json.dumps(e, ensure_ascii=False)[:1800], flush=True)
+            cfg["war_logged"] = True
+            save_data()
+        we_atk = WAR_FAMILY_NAME in _norm(atk)
+        server = str(e.get("serverName") or "")
+        location = e.get("pointName") or e.get("point") or "—"
+        winner = str(e.get("winner") or e.get("winnerSide") or e.get("result") or "")
+        wl = winner.lower()
+        if "atk" in wl or "attack" in wl:
+            win = we_atk
+        elif "def" in wl:
+            win = not we_atk
+        else:
+            wname = _norm(e.get("winnerName") or "")
+            win = ((wname == _norm(atk) and we_atk) or (wname == _norm(dfn) and not we_atk)) if wname else False
+        try:
+            dt = datetime.datetime.fromisoformat(str(e.get("startedAt")).replace("Z", "+00:00"))
+            time_str = dt.astimezone(MSK).strftime("%d.%m %H:%M")
+        except Exception:
+            time_str = "—"
+        our = _team_from(e, "attacker" if we_atk else "defender", atk if we_atk else dfn)
+        enemy = _team_from(e, "defender" if we_atk else "attacker", dfn if we_atk else atk)
+        payload = {"win": win, "location": location, "server": server, "time": time_str,
+                   "our": our, "enemy": enemy}
+        ch_id = blaine_id if "blaine" in server.lower() else chil_id
+        ch = bot.get_channel(ch_id) if ch_id else None
+        if ch:
+            buf = make_war_card(payload) if our["players"] else None
+            if not buf:
+                buf = make_war_image(enemy["name"], location, server, "atk" if we_atk else "def", win, time_str)
+            try:
+                if buf:
+                    await ch.send(file=discord.File(buf, filename="war.png"))
+                else:
+                    rr = "ПОБЕДА" if win else "ПОРАЖЕНИЕ"
+                    await ch.send(f"**EXTENDO vs {enemy['name']}** · {location} · {server} — {rr}")
+            except Exception as ex:
+                print(f"[war] send: {ex}", flush=True)
+        seen.append(eid)
+    if len(seen) > 200:
+        cfg["war_seen"] = seen[-200:]
+    save_data()
+
+
+@war_loop.before_loop
+async def _before_war():
+    await bot.wait_until_ready()
+
+
+@bot.tree.command(name="setup_war", description="Создать каналы статы войн + переименовать старые категории")
+async def setup_war_cmd(interaction: discord.Interaction):
+    if (interaction.user.id != interaction.guild.owner_id
+            and not interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("⛔ Только для админов.", ephemeral=True)
+        return
+    await interaction.response.send_message("⏳ Настраиваю статистику войн…", ephemeral=True)
+    g = interaction.guild
+    report = []
+
+    # переименовать старые категории в Chilliad
+    renames = {1494369677248561174: "Extendo Chilliad", 1512868053409599669: "VZP Chilliad"}
+    for cid, newname in renames.items():
+        cat = g.get_channel(cid)
+        if cat and cat.name != newname:
+            try:
+                await cat.edit(name=newname)
+            except Exception as e:
+                report.append(f"{newname}: {e}")
+
+    # канал статы войн Chilliad — в категории VZP Chilliad (бывш. VZP)
+    vzp_cat = g.get_channel(1512868053409599669)
+    if vzp_cat:
+        ch = discord.utils.get(vzp_cat.channels, name="статистика-войн")
+        if not ch:
+            try:
+                ch = await g.create_text_channel("статистика-войн", category=vzp_cat)
+            except Exception as e:
+                report.append(f"война-chilliad: {e}")
+                ch = None
+        if ch:
+            _data.setdefault("cfg", {})["war_chilliad"] = ch.id
+
+    # канал статы войн Blaine — в категории VZP Blaine
+    blaine_cat = discord.utils.get(g.categories, name="VZP Blaine")
+    if blaine_cat:
+        ch = discord.utils.get(blaine_cat.channels, name="статистика-войн")
+        if not ch:
+            try:
+                ch = await g.create_text_channel("статистика-войн", category=blaine_cat)
+            except Exception as e:
+                report.append(f"война-blaine: {e}")
+                ch = None
+        if ch:
+            _data.setdefault("cfg", {})["war_blaine"] = ch.id
+    else:
+        report.append("Категория VZP Blaine не найдена — сначала /setup_vzp_blaine")
+
+    save_data()
+    cfg = _data.get("cfg", {})
+    msg = (f"✅ Готово!\nСтата Chilliad: <#{cfg.get('war_chilliad', 0)}>\n"
+           f"Стата Blaine: <#{cfg.get('war_blaine', 0)}>\n"
+           "Старые категории переименованы в Chilliad.")
+    if report:
+        msg += "\n⚠️ " + "; ".join(report[:6])
+    try:
+        await interaction.followup.send(msg, ephemeral=True)
+    except Exception:
+        pass
+
+
+@bot.tree.command(name="war_test", description="Показать пример карточки войны (дизайн)")
+async def war_test_cmd(interaction: discord.Interaction):
+    sample = {"win": True, "location": "Рынок Текстайл-сити — Мясо", "server": "Chiliad",
+              "time": "27.10 22:28",
+              "our": {"name": "X EXTENDO X", "kills": 10, "damage": "1 595", "hs": 19, "players": [
+                  {"name": "Matteo_Violencean", "k": 3, "shots": 82, "dmg": 211, "hit": 37.8, "hs": 2.4},
+                  {"name": "Icepeak_Extendo", "k": 2, "shots": 138, "dmg": 321, "hit": 34.8, "hs": 0.7},
+                  {"name": "Kayseri_Extendo", "k": 2, "shots": 98, "dmg": 131, "hit": 20.4, "hs": 4.1},
+                  {"name": "Ben_Ten", "k": 1, "shots": 131, "dmg": 281, "hit": 34.4, "hs": 0},
+                  {"name": "Gazik_Extendo", "k": 1, "shots": 86, "dmg": 103, "hit": 17.4, "hs": 4.7},
+                  {"name": "New_Era", "k": 0, "shots": 43, "dmg": 90, "hit": 18.6, "hs": 4.7}]},
+              "enemy": {"name": "HARRIGAN", "kills": 1, "damage": "1 334", "hs": 9, "players": [
+                  {"name": "Ye_Harriganov", "k": 1, "shots": 39, "dmg": 113, "hit": 46.2, "hs": 0},
+                  {"name": "Lord_Harriganov", "k": 0, "shots": 212, "dmg": 348, "hit": 25.5, "hs": 1.4},
+                  {"name": "Foxes_Harriganov", "k": 0, "shots": 40, "dmg": 150, "hit": 40, "hs": 2.5}]}}
+    buf = make_war_card(sample)
+    if buf:
+        await interaction.response.send_message(file=discord.File(buf, filename="war_test.png"), ephemeral=True)
+    else:
+        await interaction.response.send_message("Не удалось сгенерить (нет Pillow).", ephemeral=True)
+
+
+# ============================================================================
+#  ===== ЗАПИСЬ НА ВС (/reac) =====
+# ============================================================================
+REAC_POSITIONS = ["Вход", "Опора", "Фраг", "Разгон", "Коллер", "Хил", "Снайпер", "Любая"]
+
+
+def reac_embed(state):
+    slots = state["slots"]
+    main = state["main"]       # {uid: position}
+    subs = state["subs"]       # [uid]
+    embed = discord.Embed(title=f"📋  ЗАПИСЬ НА ВС  ·  {state['format']}",
+                          color=EMBED_COLOR,
+                          description=(f"🕒 {state.get('time','—')}\n"
+                                       "Выбери позицию в меню ниже — запишешься в основу.\n"
+                                       "Кол кидай в ветке. Нет места — жми **Замена**."))
+    if THUMBNAIL_URL.startswith("http"):
+        embed.set_thumbnail(url=THUMBNAIL_URL)
+    main_lines = []
+    for i, (uid, pos) in enumerate(main.items(), 1):
+        main_lines.append(f"`{i}.` <@{uid}> — **{pos}**")
+    embed.add_field(name=f"✅ Основа ({len(main)}/{slots})",
+                    value="\n".join(main_lines) or "—", inline=False)
+    sub_lines = [f"<@{u}>" for u in subs]
+    embed.add_field(name=f"🔄 Замена ({len(subs)})",
+                    value=", ".join(sub_lines) or "—", inline=False)
+    embed.set_footer(text=FOOTER_TEXT,
+                     icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+    return embed
+
+
+async def reac_update(interaction, state):
+    try:
+        await interaction.message.edit(embed=reac_embed(state))
+    except Exception:
+        pass
+    save_data()
+
+
+async def reac_ensure_thread(interaction, state):
+    if state.get("thread_id"):
+        return interaction.guild.get_channel(state["thread_id"])
+    try:
+        th = await interaction.message.create_thread(name=f"ВС {state['format']} — колы/позиции")
+        state["thread_id"] = th.id
+        save_data()
+        return th
+    except Exception:
+        return None
+
+
+class ReacPositionSelect(discord.ui.Select):
+    def __init__(self):
+        opts = [discord.SelectOption(label=p, value=p) for p in REAC_POSITIONS]
+        super().__init__(placeholder="Выбери позицию и запишись…", options=opts,
+                         custom_id="reac_pos")
+
+    async def callback(self, interaction: discord.Interaction):
+        mid = str(interaction.message.id)
+        state = _data.setdefault("reac", {}).get(mid)
+        if not state:
+            await interaction.response.send_message("Эта запись уже неактивна.", ephemeral=True)
+            return
+        uid = str(interaction.user.id)
+        pos = self.values[0]
+        if uid in state["main"]:
+            state["main"][uid] = pos  # смена позиции
+        else:
+            if len(state["main"]) >= state["slots"]:
+                await interaction.response.send_message(
+                    "❌ Основа заполнена — жми **🔄 Замена**.", ephemeral=True)
+                return
+            if uid in state["subs"]:
+                state["subs"].remove(uid)
+            state["main"][uid] = pos
+        await interaction.response.send_message(f"✅ Ты записан: **{pos}**. Кидай кол в ветке.", ephemeral=True)
+        th = await reac_ensure_thread(interaction, state)
+        if th:
+            try:
+                await th.add_user(interaction.user)
+                await th.send(f"{interaction.user.mention} записался на **{pos}** — кидай кол 📸")
+            except Exception:
+                pass
+        await reac_update(interaction, state)
+
+
+class ReacView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ReacPositionSelect())
+
+    @discord.ui.button(label="🔄 Замена", style=discord.ButtonStyle.secondary, custom_id="reac_sub")
+    async def sub(self, interaction, button):
+        mid = str(interaction.message.id)
+        state = _data.setdefault("reac", {}).get(mid)
+        if not state:
+            await interaction.response.send_message("Запись неактивна.", ephemeral=True); return
+        uid = str(interaction.user.id)
+        state["main"].pop(uid, None)
+        if uid not in state["subs"]:
+            state["subs"].append(uid)
+        await interaction.response.send_message("🔄 Ты в замене.", ephemeral=True)
+        await reac_update(interaction, state)
+
+    @discord.ui.button(label="❌ Выписаться", style=discord.ButtonStyle.danger, custom_id="reac_leave")
+    async def leave(self, interaction, button):
+        mid = str(interaction.message.id)
+        state = _data.setdefault("reac", {}).get(mid)
+        if not state:
+            await interaction.response.send_message("Запись неактивна.", ephemeral=True); return
+        uid = str(interaction.user.id)
+        state["main"].pop(uid, None)
+        if uid in state["subs"]:
+            state["subs"].remove(uid)
+        await interaction.response.send_message("❌ Ты выписан.", ephemeral=True)
+        await reac_update(interaction, state)
+
+    @discord.ui.button(label="🧵 Ветка", style=discord.ButtonStyle.primary, custom_id="reac_thread")
+    async def thread(self, interaction, button):
+        mid = str(interaction.message.id)
+        state = _data.setdefault("reac", {}).get(mid)
+        if not state:
+            await interaction.response.send_message("Запись неактивна.", ephemeral=True); return
+        th = await reac_ensure_thread(interaction, state)
+        if th:
+            await interaction.response.send_message(f"🧵 Ветка: {th.mention}", ephemeral=True)
+        else:
+            await interaction.response.send_message("Не смог открыть ветку.", ephemeral=True)
+
+
+@bot.tree.command(name="reac", description="Создать запись на ВС")
+@app_commands.describe(формат="Например 6x6", время="Когда (напр. 21:00 МСК)")
+async def reac_cmd(interaction: discord.Interaction, формат: str, время: str = "—"):
+    # slots = число слева
+    import re as _re
+    m = _re.match(r"\s*(\d+)", формат)
+    slots = int(m.group(1)) if m else 6
+    state = {"format": формат, "time": время, "slots": slots,
+             "main": {}, "subs": [], "thread_id": None,
+             "channel_id": interaction.channel_id}
+    await interaction.response.send_message("Создаю запись…", ephemeral=True)
+    msg = await interaction.channel.send(content="@here 📋 **Запись на ВС!**",
+                                         embed=reac_embed(state), view=ReacView(),
+                                         allowed_mentions=discord.AllowedMentions(everyone=True))
+    _data.setdefault("reac", {})[str(msg.id)] = state
+    save_data()
+
+
+@bot.tree.command(name="setup_all", description="Создать ВСЕ системные каналы автоматически")
+async def setup_all_cmd(interaction: discord.Interaction):
+    if (interaction.user.id != interaction.guild.owner_id
+            and not interaction.user.guild_permissions.administrator):
+        await interaction.response.send_message("⛔ Только для админов/владельца.", ephemeral=True)
+        return
+    await interaction.response.send_message("⏳ Создаю систему… 20-40 сек.", ephemeral=True)
+    g = interaction.guild
+    cfg = _data.setdefault("cfg", {})
+    report = []
+
+    async def ensure_text(name, category=None, private=False, save_key=None):
+        ch = discord.utils.get(g.text_channels, name=name)
+        if not ch:
+            ow = None
+            if private:
+                ow = {g.default_role: discord.PermissionOverwrite(view_channel=False),
+                      g.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)}
+            try:
+                ch = await g.create_text_channel(name, category=category, overwrites=ow or {})
+            except Exception as e:
+                report.append(f"{name}: {e}")
+                return None
+        if save_key:
+            cfg[save_key] = ch.id
+        return ch
+
+    # системная категория (скрытая)
+    sys_cat = discord.utils.get(g.categories, name="⚙ Extendo Система")
+    if not sys_cat:
+        try:
+            sys_cat = await g.create_category("⚙ Extendo Система", overwrites={
+                g.default_role: discord.PermissionOverwrite(view_channel=False),
+                g.me: discord.PermissionOverwrite(view_channel=True)})
+        except Exception as e:
+            report.append(f"категория: {e}")
+
+    await ensure_text("логи-бэкап", sys_cat, private=True, save_key="backup")
+    await ensure_text("ник-напоминание", sys_cat, private=True, save_key="nickform_channel")
+
+    # публичные каналы
+    welcome = await ensure_text("добро-пожаловать", save_key="welcome")
+    honor = await ensure_text("доска-почёта", save_key="honor")
+    rules_ch = await ensure_text("правила")
+
+    # роль "Ник не по форме"
+    nf_role = discord.utils.get(g.roles, name="Ник не по форме")
+    if not nf_role:
+        try:
+            nf_role = await g.create_role(name="Ник не по форме", colour=discord.Colour(0xE67E22),
+                                          reason="Контроль ников")
+        except Exception as e:
+            report.append(f"роль ника: {e}")
+    if nf_role:
+        cfg["nickform_role"] = nf_role.id
+
+    # выложить правила
+    if rules_ch:
+        try:
+            await rules_ch.purge(limit=20)
+        except Exception:
+            pass
+        try:
+            head = discord.Embed(title="📜  ПРАВИЛА СЕМЬИ  ·  EXTENDO FAMILY", color=EMBED_COLOR,
+                                 description="Соблюдение правил обязательно. Наказания — на усмотрение СС (п.1.5).")
+            if BANNER_URL.startswith("http"):
+                head.set_image(url=BANNER_URL)
+            await rules_ch.send(embed=head)
+            for title, lines in RULES_BLOCKS:
+                emb = discord.Embed(title=title, color=EMBED_COLOR, description="\n".join(lines))
+                emb.set_footer(text=FOOTER_TEXT)
+                await rules_ch.send(embed=emb)
+        except Exception as e:
+            report.append(f"правила: {e}")
+
+    # первый бэкап сразу (чтобы монеты были в безопасности)
+    bch = g.get_channel(cfg.get("backup", 0))
+    if bch and os.path.exists(DATA_FILE):
+        try:
+            await bch.send(content="🗄 Первый бэкап", file=discord.File(DATA_FILE))
+        except Exception:
+            pass
+
+    save_data()
+    msg = ("✅ **Система создана!**\n"
+           f"📜 Правила: {rules_ch.mention if rules_ch else '—'}\n"
+           f"👋 Приветствия: {welcome.mention if welcome else '—'}\n"
+           f"🏅 Доска почёта: {honor.mention if honor else '—'}\n"
+           f"🗄 Бэкап: <#{cfg.get('backup',0)}> (монеты теперь в безопасности)\n"
+           "Дальше: `/setup_vzp_blaine` и `/setup_war` для войн.")
+    if report:
+        msg += "\n⚠️ " + "; ".join(report[:6])
+    try:
+        await interaction.followup.send(msg, ephemeral=True)
+    except Exception:
+        pass
+
+
 @bot.event
 async def on_ready():
     if not voice_earn_loop.is_running():
@@ -1439,8 +2689,16 @@ async def on_ready():
         weekly_loop.start()
     if not voice_digest_loop.is_running():
         voice_digest_loop.start()
-    if not hourly_stats_loop.is_running():
-        hourly_stats_loop.start()
+    # hourly_stats_loop отключён — топ теперь только раз в неделю (weekly_loop)
+    if not backup_loop.is_running():
+        backup_loop.start()
+    if not war_loop.is_running():
+        war_loop.start()
+    await restore_from_backup()
+    if not nickform_loop.is_running():
+        nickform_loop.start()
+    if not honor_loop.is_running():
+        honor_loop.start()
     # МГНОВЕННАЯ регистрация команд во все серверы, где есть бот
     try:
         for g in bot.guilds:
@@ -1452,7 +2710,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v17 (Blaine) === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v24 (setup_all+постоянное хранение) === запущен как {bot.user}", flush=True)
 
 
 load_data()
