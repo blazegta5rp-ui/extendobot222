@@ -87,8 +87,8 @@ FAMILIES = {
 CURRENCY_NAME = "Extendo Coins"   # игровая валюта
 CURRENCY_EMOJI = "🪙"
 FOOTER_TEXT = "EXTENDO FAMILY"
-COINS_PER_ACCEPT = 10          # монет рекрутеру за принятого (базово)
-COINS_PER_HOUR = 1             # монета за ПОЛНЫЙ час в войсе (базово)
+COINS_PER_ACCEPT = 6           # монет рекрутеру за принятого (базово)
+COINS_PER_HOUR = 0.5           # монет за ПОЛНЫЙ час в войсе (базово)
 NIGHT_MULTIPLIER = 1.3         # ночной бонус ×1.3
 NIGHT_FROM = 0                 # ночь с 00:00 МСК
 NIGHT_TO = 10                  # ночь до 10:00 МСК
@@ -107,6 +107,12 @@ STAFF_ROLE_IDS = [
     1513510003607212062, 1562891933561397258,   # Head VZP Chilliad/Blaine
     701066783498698813, 1562892051866198177,    # Extendo Main Chilliad/Blaine
 ]
+# --- Деп.Овнер и выше (секретные команды, антиснос) ---
+DEP_OWNER_PLUS_IDS = [
+    701066421240856626,                      # Owner
+    996791697193308302, 1562891371101032528, # Dep.Owner Chilliad/Blaine
+]
+
 # --- Ник не по форме ---
 NICKFORM_DAY = 0          # день недели проверки (0=пн)
 NICKFORM_HOUR = 12        # час МСК
@@ -307,6 +313,7 @@ class FamilyBot(discord.Client):
         self.add_view(ShopView())
         self.add_view(GiveView())
         self.add_view(ReacView())
+        self.add_view(GiveawayView())
 
 
 bot = FamilyBot()
@@ -371,11 +378,9 @@ async def log_coins(member, amount, balance, reason):
 
 
 def fmt_coins(n):
-    n = round(float(n), 1)
-    if n.is_integer():
-        txt = f"{int(n):,}".replace(",", " ")
-    else:
-        txt = f"{n:,.1f}".replace(",", " ")
+    # ВИЗУАЛЬНО округляем до целого (реальный баланс в данных остаётся дробным)
+    n = int(round(float(n)))
+    txt = f"{n:,}".replace(",", " ")
     return txt + f" {CURRENCY_EMOJI}"
 
 
@@ -1183,14 +1188,14 @@ async def take_cmd(interaction: discord.Interaction, участник: discord.M
     if сумма <= 0:
         await interaction.response.send_message("Сумма должна быть больше 0.", ephemeral=True)
         return
-    before = round(u(участник.id)["balance"], 1)
+    before = u(участник.id)["balance"]
     add_balance(участник.id, -abs(сумма))          # не уйдёт в минус (clamp)
-    after = round(u(участник.id)["balance"], 1)
-    snyato = round(before - after, 1)
+    after = u(участник.id)["balance"]
+    snyato = before - after
     await interaction.response.send_message(
         f"✅ Снято {fmt_coins(snyato)} у {участник.mention}\n"
-        f"Было: {before} → стало: {after}\nПричина: {причина}", ephemeral=True)
-    await _coin_log(участник, f"− {snyato}", interaction.user, причина, after)
+        f"Было: {int(round(before))} → стало: {int(round(after))}\nПричина: {причина}", ephemeral=True)
+    await _coin_log(участник, f"− {int(round(snyato))}", interaction.user, причина, after)
 
 
 @bot.tree.command(name="обнулить_чела", description="Обнулить баланс КОНКРЕТНОГО участника")
@@ -1199,12 +1204,12 @@ async def reset_one_cmd(interaction: discord.Interaction, участник: disc
     if not _can_manage_coins(interaction.user):
         await interaction.response.send_message("⛔ У тебя нет прав управлять монетами.", ephemeral=True)
         return
-    before = round(u(участник.id)["balance"], 1)
+    before = u(участник.id)["balance"]
     u(участник.id)["balance"] = 0
     save_data()
     await interaction.response.send_message(
-        f"✅ Баланс {участник.mention} обнулён (было {before}).\nПричина: {причина}", ephemeral=True)
-    await _coin_log(участник, f"обнулён (было {before})", interaction.user, причина, 0)
+        f"✅ Баланс {участник.mention} обнулён (было {int(round(before))}).\nПричина: {причина}", ephemeral=True)
+    await _coin_log(участник, f"обнулён (было {int(round(before))})", interaction.user, причина, 0)
 
 
 # ============================================================================
@@ -1267,14 +1272,14 @@ async def balances_cmd(interaction: discord.Interaction, только_с_мон�
         name = m.display_name if m else f"id:{uid}"
         rows.append((bal, name, uid))
     rows.sort(key=lambda x: x[0], reverse=True)
-    total = round(sum(d.get("balance", 0) for d in users.values()), 1)
+    total = int(round(sum(d.get("balance", 0) for d in users.values())))
 
     if not rows:
         await interaction.followup.send("Пока ни у кого нет монет.", ephemeral=True)
         return
 
-    # текстовый файл со ВСЕМИ (чтобы не упереться в лимит сообщения)
-    lines = [f"{i:>3}. {name:<28} {bal:>8} {CURRENCY_NAME}"
+    # текстовый файл со ВСЕМИ (чтобы не упереться в лимит сообщения) — баланс целым
+    lines = [f"{i:>3}. {name:<28} {int(round(bal)):>8} {CURRENCY_NAME}"
              for i, (bal, name, uid) in enumerate(rows, 1)]
     header = (f"=== БАЛАНСЫ УЧАСТНИКОВ EXTENDO ===\n"
               f"Всего участников с монетами: {len(rows)}\n"
@@ -1283,7 +1288,7 @@ async def balances_cmd(interaction: discord.Interaction, только_с_мон�
     buf = io.BytesIO((header + "\n".join(lines)).encode("utf-8"))
 
     # топ-15 прямо в сообщение
-    preview = "\n".join(f"`{i:>2}.` {name} — **{bal}** {CURRENCY_EMOJI}"
+    preview = "\n".join(f"`{i:>2}.` {name} — **{int(round(bal))}** {CURRENCY_EMOJI}"
                         for i, (bal, name, uid) in enumerate(rows[:15], 1))
     emb = discord.Embed(title="💰 Балансы участников",
                         description=preview, color=EMBED_COLOR)
@@ -2960,6 +2965,323 @@ async def fix_perms_cmd(interaction: discord.Interaction):
         pass
 
 
+# ============================================================================
+#  ===== РОЗЫГРЫШИ (/создать_розыгрыш) =====
+# ============================================================================
+import re as _re2
+
+def _parse_duration(s):
+    """'1h30m', '2d', '45m', '1ч30м' -> секунды (минимум 10с)."""
+    s = s.lower().strip().replace("ч", "h").replace("д", "d").replace("м", "m").replace("с", "s").replace(" ", "")
+    total = 0
+    for num, unit in _re2.findall(r"(\d+)\s*([dhms])", s):
+        total += int(num) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[unit]
+    if total == 0 and s.isdigit():
+        total = int(s) * 60     # просто число = минуты
+    return max(10, total) if total else 0
+
+
+def giveaway_embed(gw, ended=False):
+    parts = gw.get("participants", [])
+    end_ts = int(gw["end_ts"])
+    title = "🎉 РОЗЫГРЫШ ЗАВЕРШЁН" if ended else "🎉 РОЗЫГРЫШ"
+    when = "завершён" if ended else f"<t:{end_ts}:R>  (<t:{end_ts}:f>)"
+    emb = discord.Embed(title=title, color=EMBED_COLOR)
+    emb.description = (f"## 🎁 {gw['prize']}\n\n"
+                       f"🕒 Завершение: {when}\n"
+                       f"👤 Создал: <@{gw['host_id']}>")
+    if parts:
+        names = ", ".join(f"<@{u}>" for u in parts[:40])
+        extra = f"  … и ещё {len(parts) - 40}" if len(parts) > 40 else ""
+        emb.add_field(name=f"✅ Участники ({len(parts)})", value=names + extra, inline=False)
+    else:
+        emb.add_field(name="✅ Участники (0)", value="пока никто — жми кнопку ниже!", inline=False)
+    if gw.get("winner"):
+        emb.add_field(name="🏆 Победитель", value=f"<@{gw['winner']}>", inline=False)
+    if THUMBNAIL_URL.startswith("http"):
+        emb.set_thumbnail(url=THUMBNAIL_URL)
+    emb.set_footer(text=FOOTER_TEXT, icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+    return emb
+
+
+class GiveawayView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🎉 Участвую", style=discord.ButtonStyle.success, custom_id="gaw_join")
+    async def join(self, interaction, button):
+        mid = str(interaction.message.id)
+        gw = _data.setdefault("giveaways", {}).get(mid)
+        if not gw or gw.get("ended"):
+            await interaction.response.send_message("Этот розыгрыш уже завершён.", ephemeral=True); return
+        uid = str(interaction.user.id)
+        if uid in gw["participants"]:
+            gw["participants"].remove(uid); save_data()
+            await interaction.response.send_message("➖ Ты вышел из розыгрыша.", ephemeral=True)
+        else:
+            gw["participants"].append(uid); save_data()
+            await interaction.response.send_message("✅ Ты в розыгрыше! Удачи 🍀", ephemeral=True)
+        try:
+            await interaction.message.edit(embed=giveaway_embed(gw))
+        except Exception:
+            pass
+
+    @discord.ui.button(label="👥 Кто участвует", style=discord.ButtonStyle.secondary, custom_id="gaw_list")
+    async def who(self, interaction, button):
+        mid = str(interaction.message.id)
+        gw = _data.setdefault("giveaways", {}).get(mid)
+        if not gw:
+            await interaction.response.send_message("Розыгрыш не найден.", ephemeral=True); return
+        parts = gw.get("participants", [])
+        if not parts:
+            await interaction.response.send_message("Пока никто не записался.", ephemeral=True); return
+        txt = "\n".join(f"{i}. <@{u}>" for i, u in enumerate(parts, 1))
+        await interaction.response.send_message(f"👥 **Участники ({len(parts)}):**\n{txt[:1900]}", ephemeral=True)
+
+
+async def _finish_giveaway(mid, forced_winner=None):
+    gw = _data.get("giveaways", {}).get(mid)
+    if not gw or gw.get("ended"):
+        return
+    parts = gw.get("participants", [])
+    winner = forced_winner or gw.get("forced_winner")
+    if winner and winner not in parts:
+        winner = None
+    if not winner:
+        winner = random.choice(parts) if parts else None
+    gw["ended"] = True
+    gw["winner"] = winner
+    save_data()
+    ch = bot.get_channel(gw["channel_id"])
+    if not ch:
+        return
+    try:
+        msg = await ch.fetch_message(int(mid))
+        await msg.edit(embed=giveaway_embed(gw, ended=True), view=None)
+    except Exception:
+        pass
+    try:
+        if winner:
+            await ch.send(f"🎉 <@{winner}>, поздравляем! Ты выиграл **{gw['prize']}**!",
+                          allowed_mentions=discord.AllowedMentions(users=True))
+        else:
+            await ch.send(f"😔 Розыгрыш **{gw['prize']}** завершён — никто не участвовал.")
+    except Exception:
+        pass
+
+
+@tasks.loop(seconds=20)
+async def giveaway_loop():
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    for mid, gw in list(_data.get("giveaways", {}).items()):
+        if not gw.get("ended") and now >= gw.get("end_ts", 0):
+            await _finish_giveaway(mid)
+
+
+@giveaway_loop.before_loop
+async def _before_gaw():
+    await bot.wait_until_ready()
+
+
+@bot.tree.command(name="создать_розыгрыш", description="Создать розыгрыш (приз + время)")
+@app_commands.describe(приз="Что разыгрываем", время="Через сколько завершить: 1h / 30m / 2d / 1ч30м")
+async def create_giveaway_cmd(interaction: discord.Interaction, приз: str, время: str):
+    if not is_staff(interaction.user):
+        await interaction.response.send_message("⛔ Только для персонала.", ephemeral=True); return
+    secs = _parse_duration(время)
+    if not secs:
+        await interaction.response.send_message(
+            "⚠️ Не понял время. Примеры: `1h`, `30m`, `2d`, `1ч30м`.", ephemeral=True); return
+    end_ts = datetime.datetime.now(datetime.timezone.utc).timestamp() + secs
+    gw = {"prize": приз, "end_ts": end_ts, "host_id": interaction.user.id,
+          "channel_id": interaction.channel_id, "participants": [],
+          "ended": False, "winner": None, "forced_winner": None}
+    await interaction.response.send_message("Создаю розыгрыш…", ephemeral=True)
+    msg = await interaction.channel.send(content="@here 🎉 **Новый розыгрыш!**",
+                                         embed=giveaway_embed(gw), view=GiveawayView(),
+                                         allowed_mentions=discord.AllowedMentions(everyone=True))
+    _data.setdefault("giveaways", {})[str(msg.id)] = gw
+    save_data()
+
+
+def _is_dep_plus(member, guild):
+    return (member.id == guild.owner_id
+            or member.guild_permissions.administrator
+            or _has_any_role(member, DEP_OWNER_PLUS_IDS))
+
+
+@bot.tree.command(name="розыгрыш_фикс", description="🤫")
+@app_commands.describe(победитель="Кого сделать победителем", сразу="Завершить розыгрыш сейчас")
+async def giveaway_fix_cmd(interaction: discord.Interaction, победитель: discord.Member, сразу: bool = False):
+    if not _is_dep_plus(interaction.user, interaction.guild):
+        await interaction.response.send_message("⛔ Команда недоступна.", ephemeral=True); return
+    active = [(mid, gw) for mid, gw in _data.get("giveaways", {}).items() if not gw.get("ended")]
+    if not active:
+        await interaction.response.send_message("Нет активных розыгрышей.", ephemeral=True); return
+    mid, gw = active[-1]
+    uid = str(победитель.id)
+    if uid not in gw["participants"]:
+        gw["participants"].append(uid)   # тихо добавим, чтобы выглядело честно
+    gw["forced_winner"] = uid
+    save_data()
+    if сразу:
+        await _finish_giveaway(mid, forced_winner=uid)
+        await interaction.response.send_message(
+            f"🤫 Готово. Победитель — {победитель.mention}. Розыгрыш завершён.", ephemeral=True)
+    else:
+        await interaction.response.send_message(
+            f"🤫 Готово. Когда розыгрыш закончится, победит {победитель.mention}.", ephemeral=True)
+    try:
+        ch = bot.get_channel(gw["channel_id"]); msg = await ch.fetch_message(int(mid))
+        await msg.edit(embed=giveaway_embed(gw))
+    except Exception:
+        pass
+
+
+# ============================================================================
+#  ===== АНТИСНОС / АНТИСЛИВ (защита сервера) =====
+# ============================================================================
+ANTINUKE_LIMITS = {"channel_delete": 3, "role_delete": 3, "ban": 4, "kick": 4}
+ANTINUKE_WINDOW = 20        # секунд
+_antinuke_hits = {}         # {(actor_id, kind): [timestamps]}
+
+
+def _antinuke_on():
+    return _data.get("cfg", {}).get("antinuke", True)
+
+
+def _is_trusted(uid, guild):
+    if uid == guild.owner_id or uid == bot.user.id:
+        return True
+    return uid in _data.get("cfg", {}).get("antinuke_wl", [])
+
+
+async def _antinuke_actor(guild, action, target_id=None):
+    import datetime as _dt
+    try:
+        async for entry in guild.audit_logs(limit=5, action=action):
+            if target_id is not None and getattr(entry.target, "id", None) != target_id:
+                continue
+            age = (_dt.datetime.now(_dt.timezone.utc) - entry.created_at).total_seconds()
+            if age > 12:
+                return None     # старое событие — не считаем
+            return entry.user
+    except Exception:
+        return None
+    return None
+
+
+def _antinuke_count(actor_id, kind):
+    import time as _t
+    now = _t.time()
+    key = (actor_id, kind)
+    arr = [t for t in _antinuke_hits.get(key, []) if now - t < ANTINUKE_WINDOW]
+    arr.append(now)
+    _antinuke_hits[key] = arr
+    return len(arr)
+
+
+async def _antinuke_trip(guild, actor_id, kind):
+    actor = guild.get_member(actor_id)
+    acted = "роли снять не удалось"
+    if actor:
+        removed = 0
+        for r in list(actor.roles):
+            if r.is_default():
+                continue
+            p = r.permissions
+            dangerous = (p.administrator or p.ban_members or p.kick_members
+                         or p.manage_channels or p.manage_roles or p.manage_guild)
+            if dangerous and r < guild.me.top_role:
+                try:
+                    await actor.remove_roles(r, reason="Антиснос: подозрительная активность")
+                    removed += 1
+                except Exception:
+                    pass
+        acted = f"сняты опасные роли ({removed})" if removed else "роли снять не удалось (бот ниже по иерархии)"
+    text = (f"🚨 **АНТИСНОС СРАБОТАЛ**\n"
+            f"Кто: {actor.mention if actor else '??'} (`{actor_id}`)\n"
+            f"Действие: **{kind}** (лимит {ANTINUKE_LIMITS.get(kind)} за {ANTINUKE_WINDOW}с)\n"
+            f"Меры: {acted}")
+    ch = bot.get_channel(GIVE_LOG_CHANNEL_ID) if GIVE_LOG_CHANNEL_ID else None
+    if ch:
+        try: await ch.send(text)
+        except Exception: pass
+    try:
+        if guild.owner:
+            await guild.owner.send(f"[{guild.name}] {text}")
+    except Exception:
+        pass
+
+
+async def _antinuke_handle(guild, action, kind, target_id=None):
+    if not _antinuke_on():
+        return
+    actor = await _antinuke_actor(guild, action, target_id)
+    if not actor or _is_trusted(actor.id, guild):
+        return
+    if _antinuke_count(actor.id, kind) >= ANTINUKE_LIMITS[kind]:
+        await _antinuke_trip(guild, actor.id, kind)
+
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    await _antinuke_handle(channel.guild, discord.AuditLogAction.channel_delete, "channel_delete")
+
+
+@bot.event
+async def on_guild_role_delete(role):
+    await _antinuke_handle(role.guild, discord.AuditLogAction.role_delete, "role_delete")
+
+
+@bot.event
+async def on_member_ban(guild, user):
+    await _antinuke_handle(guild, discord.AuditLogAction.ban, "ban", target_id=user.id)
+
+
+@bot.event
+async def on_member_remove(member):
+    # кик засчитываем только если есть СВЕЖАЯ запись kick именно по этому участнику
+    await _antinuke_handle(member.guild, discord.AuditLogAction.kick, "kick", target_id=member.id)
+
+
+@bot.tree.command(name="антиснос", description="Вкл/выкл защиту от сноса/слива (Деп.Овнер+)")
+@app_commands.describe(состояние="on / off / статус")
+async def antinuke_cmd(interaction: discord.Interaction, состояние: str = "статус"):
+    if not _is_dep_plus(interaction.user, interaction.guild):
+        await interaction.response.send_message("⛔ Недоступно.", ephemeral=True); return
+    cfg = _data.setdefault("cfg", {})
+    s = состояние.lower()
+    if s in ("on", "вкл", "включить"):
+        cfg["antinuke"] = True; save_data()
+        await interaction.response.send_message("🛡 Антиснос/антислив **включён**.", ephemeral=True)
+    elif s in ("off", "выкл", "выключить"):
+        cfg["antinuke"] = False; save_data()
+        await interaction.response.send_message("⚠️ Антиснос/антислив **выключен**.", ephemeral=True)
+    else:
+        st = "включён 🛡" if _antinuke_on() else "выключен ⚠️"
+        wl = cfg.get("antinuke_wl", [])
+        await interaction.response.send_message(
+            f"Статус: **{st}**\nЛимиты за {ANTINUKE_WINDOW}с: каналы {ANTINUKE_LIMITS['channel_delete']}, "
+            f"роли {ANTINUKE_LIMITS['role_delete']}, баны {ANTINUKE_LIMITS['ban']}, кики {ANTINUKE_LIMITS['kick']}\n"
+            f"Белый список: {len(wl)} чел (+ владелец).", ephemeral=True)
+
+
+@bot.tree.command(name="антиснос_вайтлист", description="Добавить/убрать доверенного (Деп.Овнер+)")
+@app_commands.describe(участник="Кому можно массово менять сервер без срабатывания защиты")
+async def antinuke_wl_cmd(interaction: discord.Interaction, участник: discord.Member):
+    if not _is_dep_plus(interaction.user, interaction.guild):
+        await interaction.response.send_message("⛔ Недоступно.", ephemeral=True); return
+    cfg = _data.setdefault("cfg", {})
+    wl = cfg.setdefault("antinuke_wl", [])
+    if участник.id in wl:
+        wl.remove(участник.id); save_data()
+        await interaction.response.send_message(f"➖ {участник.mention} убран из белого списка.", ephemeral=True)
+    else:
+        wl.append(участник.id); save_data()
+        await interaction.response.send_message(f"✅ {участник.mention} добавлен в белый список.", ephemeral=True)
+
+
 @bot.event
 async def on_ready():
     if not voice_earn_loop.is_running():
@@ -2978,6 +3300,8 @@ async def on_ready():
         nickform_loop.start()
     if not honor_loop.is_running():
         honor_loop.start()
+    if not giveaway_loop.is_running():
+        giveaway_loop.start()
     # МГНОВЕННАЯ регистрация команд во все серверы, где есть бот
     try:
         for g in bot.guilds:
@@ -2989,7 +3313,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v31 (кнопка Написать кандидату на заявке) === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v32 (0.5/час, 6 за принятого, целый баланс, розыгрыши, антиснос) === запущен как {bot.user}", flush=True)
 
 
 load_data()
