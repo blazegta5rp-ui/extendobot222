@@ -89,7 +89,7 @@ CURRENCY_EMOJI = "🪙"
 FOOTER_TEXT = "EXTENDO FAMILY"
 COINS_PER_ACCEPT = 6           # монет рекрутеру за принятого (базово)
 COINS_PER_HOUR = 0.5           # монет за ПОЛНЫЙ час в войсе (базово)
-NIGHT_MULTIPLIER = 1.3         # ночной бонус ×1.3
+NIGHT_MULTIPLIER = 1.0         # коэффициенты убраны (всегда ×1.0)
 NIGHT_FROM = 0                 # ночь с 00:00 МСК
 NIGHT_TO = 10                  # ночь до 10:00 МСК
 
@@ -169,9 +169,8 @@ SHOP_ITEMS = [
 
 ECONOMY_INFO = (
     "💠 **Как заработать {cur}:**\n"
-    "┣ 🎙 1 час в войсе (не в муте) — **1** монета\n"
-    "┣ 👥 1 принятый рекрутом — **10** монет\n"
-    "┗ 🌙 Ночью **00:00–10:00 МСК** — бонус **×1.3** (13 за принятого, 1.3 за час)"
+    "┣ 🎙 1 час в войсе (не в муте) — **0.5** монеты\n"
+    "┗ 👥 1 принятый рекрутом — **6** монет"
 )
 
 MSK = datetime.timezone(datetime.timedelta(hours=3))
@@ -342,6 +341,11 @@ def fam_accepted_role(fam):
     return fam.get("accepted_role_id", 0)
 
 
+def fam_grant_role(fam):
+    # роль при принятии: Family (для RP) или ВЗП-роль. Academy убрана.
+    return fam.get("family_role_id") or fam_accepted_role(fam)
+
+
 def fam_logs_channel(fam):
     key = fam.get("logs_cfg_key")
     if key:
@@ -475,17 +479,10 @@ class ApprovalModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         fam = FAMILIES[self.family_key]
-        if fam.get("family_role_id"):
-            await interaction.response.send_message(
-                "Какую роль выдать кандидату?",
-                view=RoleChoiceView(self.family_key, self.applicant_id, self.source_message,
-                                    self.discord_id.value, self.static_id.value,
-                                    self.full_name.value, interaction.user.id),
-                ephemeral=True)
-            return
+        # Academy убрана — сразу выдаём роль Family (или ВЗП-роль)
         await finalize_accept(interaction, self.family_key, self.applicant_id,
                               self.source_message, self.discord_id.value, self.static_id.value,
-                              self.full_name.value, fam_accepted_role(fam), interaction.user)
+                              self.full_name.value, fam_grant_role(fam), interaction.user)
 
 
 class DeclineModal(discord.ui.Modal):
@@ -523,6 +520,24 @@ class DeclineModal(discord.ui.Modal):
 async def finalize_accept(interaction, family_key, applicant_id, source_message,
                           discord_id, static_id, full_name, role_id, reviewer):
     fam = FAMILIES[family_key]
+    # ЗАЩИТА от двойного начисления (двойной клик / повтор)
+    msg_id = getattr(source_message, "id", None)
+    _done = _data.setdefault("accept_done", [])
+    if msg_id is not None:
+        if msg_id in _done:
+            try:
+                warn = "⚠️ Эта заявка уже обработана."
+                if interaction.response.is_done():
+                    await interaction.followup.send(warn, ephemeral=True)
+                else:
+                    await interaction.response.send_message(warn, ephemeral=True)
+            except Exception:
+                pass
+            return
+        _done.append(msg_id)
+        if len(_done) > 500:
+            _data["accept_done"] = _done[-500:]
+        save_data()
     guild = interaction.guild
     member = guild.get_member(applicant_id)
     role = guild.get_role(role_id)
@@ -545,7 +560,7 @@ async def finalize_accept(interaction, family_key, applicant_id, source_message,
     # === ЭКОНОМИКА: рекрутер получает монеты + счётчик принятых ===
     earned = add_accept(reviewer.id)
     await log_coins(reviewer, earned, u(reviewer.id)["balance"],
-                    f"Принят игрок в {fam['name']}" + (" 🌙×1.3" if is_night() else ""))
+                    f"Принят игрок в {fam['name']}")
 
     role_name = role.name if role else "—"
     try:
@@ -563,7 +578,7 @@ async def finalize_accept(interaction, family_key, applicant_id, source_message,
 
     note = ("\n⚠️ " + "; ".join(warns)) if warns else ""
     msg = (f"Кандидат принят в {fam['name']}, выдана роль **{role_name}**. "
-           f"Тебе начислено {fmt_coins(earned)}" + (" 🌙 (ночной ×1.3)" if is_night() else "") + f".{note}")
+           f"Тебе начислено {fmt_coins(earned)}.{note}")
     try:
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
@@ -571,38 +586,6 @@ async def finalize_accept(interaction, family_key, applicant_id, source_message,
             await interaction.response.send_message(msg, ephemeral=True)
     except Exception:
         pass
-
-
-class RoleChoiceView(discord.ui.View):
-    def __init__(self, family_key, applicant_id, source_message,
-                 discord_id, static_id, full_name, reviewer_id):
-        super().__init__(timeout=300)
-        self.family_key = family_key
-        self.applicant_id = applicant_id
-        self.source_message = source_message
-        self.discord_id = discord_id
-        self.static_id = static_id
-        self.full_name = full_name
-        self.reviewer_id = reviewer_id
-
-    async def _finish(self, interaction, role_id):
-        await finalize_accept(interaction, self.family_key, self.applicant_id,
-                              self.source_message, self.discord_id, self.static_id,
-                              self.full_name, role_id, interaction.user)
-        for child in self.children:
-            child.disabled = True
-        try:
-            await interaction.edit_original_response(view=self)
-        except Exception:
-            pass
-
-    @discord.ui.button(label="🎓 Academy", style=discord.ButtonStyle.primary)
-    async def academy(self, interaction, button):
-        await self._finish(interaction, FAMILIES[self.family_key]["accepted_role_id"])
-
-    @discord.ui.button(label="👑 Family", style=discord.ButtonStyle.success)
-    async def family(self, interaction, button):
-        await self._finish(interaction, FAMILIES[self.family_key]["family_role_id"])
 
 
 class AcceptButton(discord.ui.DynamicItem[discord.ui.Button],
@@ -3313,7 +3296,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v32 (0.5/час, 6 за принятого, целый баланс, розыгрыши, антиснос) === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v34 (без Academy — только Family, фикс двойного начисления) === запущен как {bot.user}", flush=True)
 
 
 load_data()
