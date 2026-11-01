@@ -300,6 +300,7 @@ def add_accept(uid):
 intents = discord.Intents.default()
 intents.members = True
 intents.voice_states = True
+intents.presences = True      # нужно для «кто не в сети» в отчётах
 
 
 class FamilyBot(discord.Client):
@@ -313,6 +314,9 @@ class FamilyBot(discord.Client):
         self.add_view(GiveView())
         self.add_view(ReacView())
         self.add_view(GiveawayView())
+        self.add_view(ReportView())
+        self.add_view(AfkPanelView())
+        self.add_view(AfkDecisionView())
 
 
 bot = FamilyBot()
@@ -370,8 +374,11 @@ async def log_coins(member, amount, balance, reason):
     if not ch:
         return
     emb = discord.Embed(color=EMBED_COLOR, timestamp=datetime.datetime.now(MSK))
-    emb.description = (f"{member.mention} получил **+{amount} {CURRENCY_EMOJI}**\n"
-                      f"💰 Баланс: **{balance:,}".replace(",", " ") + f" {CURRENCY_EMOJI}**\n"
+    amt = int(round(float(amount)))
+    bal = int(round(float(balance)))
+    sign = "+" if amt >= 0 else ""
+    emb.description = (f"{member.mention} получил **{sign}{amt} {CURRENCY_EMOJI}**\n"
+                      f"💰 Баланс: **{bal:,}".replace(",", " ") + f" {CURRENCY_EMOJI}**\n"
                       f"📌 {reason}")
     emb.set_footer(text=FOOTER_TEXT,
                    icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
@@ -3121,6 +3128,354 @@ async def giveaway_fix_cmd(interaction: discord.Interaction, победител�
         pass
 
 
+@bot.tree.command(name="розыгрыш_итог", description="Подвести итоги розыгрыша сейчас (честный рандом)")
+async def giveaway_draw_now_cmd(interaction: discord.Interaction):
+    if not is_staff(interaction.user):
+        await interaction.response.send_message("⛔ Только для персонала.", ephemeral=True); return
+    active = [(mid, gw) for mid, gw in _data.get("giveaways", {}).items() if not gw.get("ended")]
+    if not active:
+        await interaction.response.send_message("Нет активных розыгрышей.", ephemeral=True); return
+    mid, gw = active[-1]
+    await interaction.response.send_message(
+        f"🎲 Подвожу итоги розыгрыша **{gw['prize']}**…", ephemeral=True)
+    await _finish_giveaway(mid)   # победитель: forced если задан, иначе честный рандом
+
+
+# ============================================================================
+#  ===== ОТЧЁТЫ ПО КОНТЕНТУ (/отчет) — для Extendo Blaine =====
+# ============================================================================
+REPORT_TARGET_ROLE_ID = 1562892249883345026   # Extendo Family Blaine (кто должен отчитываться)
+REPORT_CREATE_ROLE_IDS = [
+    1562892051866198177,   # Extendo Main Blaine
+    1562891371101032528,   # Dep.Owner Blaine
+    701066421240856626,    # Owner
+]
+REPORT_DURATION = 40 * 60      # 40 минут на отметку
+REPORT_REWARD = 2              # +2 отправившим
+REPORT_PENALTY = 2             # -2 не отправившим
+
+
+def _can_report(member, guild):
+    return (member.id == guild.owner_id
+            or member.guild_permissions.administrator
+            or _has_any_role(member, REPORT_CREATE_ROLE_IDS))
+
+
+def _is_afk(uid):
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    a = _data.get("afk", {}).get(str(uid))
+    return bool(a and a.get("until_ts", 0) > now)
+
+
+def _report_targets(guild):
+    r = guild.get_role(REPORT_TARGET_ROLE_ID)
+    if not r:
+        return []
+    # одобренные на АФК в список не попадают
+    return [m.id for m in r.members if not m.bot and not _is_afk(m.id)]
+
+
+def report_embed(st, guild, ended=False):
+    submitted = st.get("submitted", [])
+    targets = st.get("targets", [])
+    not_sent = [u for u in targets if u not in submitted]
+    end_ts = int(st["end_ts"])
+    title = "📋 ОТЧЁТ ЗАВЕРШЁН" if ended else "📋 ОТЧЁТ ПО КОНТЕНТУ"
+    emb = discord.Embed(title=title, color=EMBED_COLOR)
+    head = f"## 🎯 {st['title']}\n"
+    if ended:
+        head += "Приём отчётов закрыт."
+    else:
+        head += f"⏱ Приём до <t:{end_ts}:R>\n📸 Скрины отчётов — в ветке ниже"
+    emb.description = head
+
+    def line(uid, mark_offline=False):
+        m = guild.get_member(int(uid)) if guild else None
+        name = m.mention if m else f"<@{uid}>"
+        if mark_offline and m is not None:
+            # в сети = online / idle (не активен) / dnd (не беспокоить); 🔴 только оффлайн
+            online = m.status in (discord.Status.online, discord.Status.idle, discord.Status.dnd)
+            return f"{'🟢' if online else '🔴'} {name}"
+        return name
+
+    sub_txt = ", ".join(line(u) for u in submitted) if submitted else "—"
+    not_txt = "\n".join(line(u, mark_offline=True) for u in not_sent) if not_sent else "—"
+    emb.add_field(name=f"✅ Отправили отчёт ({len(submitted)})", value=sub_txt[:1024], inline=False)
+    emb.add_field(name=f"❌ Не отправили ({len(not_sent)})  🔴=не в сети", value=not_txt[:1024], inline=False)
+    emb.set_footer(text=FOOTER_TEXT, icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+    if THUMBNAIL_URL.startswith("http"):
+        emb.set_thumbnail(url=THUMBNAIL_URL)
+    return emb
+
+
+async def _refresh_report(st, guild):
+    ch = bot.get_channel(st["channel_id"])
+    if not ch:
+        return
+    try:
+        msg = await ch.fetch_message(int(st["msg_id"]))
+        await msg.edit(embed=report_embed(st, guild))
+    except Exception:
+        pass
+
+
+async def _finish_report(mid):
+    st = _data.get("reports", {}).get(mid)
+    if not st or st.get("ended"):
+        return
+    st["ended"] = True
+    save_data()
+    ch = bot.get_channel(st["channel_id"])
+    guild = ch.guild if ch else None
+    submitted = list(dict.fromkeys(st.get("submitted", [])))
+    not_sent = [u for u in st.get("targets", []) if u not in submitted]
+    # начисления
+    for uid in submitted:
+        add_balance(int(uid), REPORT_REWARD)
+    for uid in not_sent:
+        add_balance(int(uid), -REPORT_PENALTY)
+    save_data()
+    # обновляем панель
+    if ch:
+        try:
+            msg = await ch.fetch_message(int(mid))
+            await msg.edit(embed=report_embed(st, guild, ended=True), view=None)
+        except Exception:
+            pass
+        # итоговое сообщение
+        res = discord.Embed(title="🏁 Итоги отчёта", color=EMBED_COLOR,
+                            description=f"**{st['title']}**")
+        sub_m = ", ".join(f"<@{u}>" for u in submitted) if submitted else "—"
+        not_m = ", ".join(f"<@{u}>" for u in not_sent) if not_sent else "—"
+        res.add_field(name=f"✅ +{REPORT_REWARD} ({len(submitted)})", value=sub_m[:1024], inline=False)
+        res.add_field(name=f"❌ −{REPORT_PENALTY} ({len(not_sent)})", value=not_m[:1024], inline=False)
+        try:
+            await ch.send(embed=res)
+        except Exception:
+            pass
+
+
+class ReportView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.select(cls=discord.ui.UserSelect, custom_id="report_mark",
+                       placeholder="✅ Отметить тех, кто отправил отчёт", min_values=1, max_values=25)
+    async def mark(self, interaction, select):
+        mid = str(interaction.message.id)
+        st = _data.setdefault("reports", {}).get(mid)
+        if not st or st.get("ended"):
+            await interaction.response.send_message("Отчёт уже закрыт.", ephemeral=True); return
+        if not _can_report(interaction.user, interaction.guild):
+            await interaction.response.send_message("⛔ Отмечать может только Main Blaine и выше.", ephemeral=True); return
+        added = 0
+        for user in select.values:
+            uid = str(user.id)
+            if uid not in st["submitted"]:
+                st["submitted"].append(uid)
+                added += 1
+        save_data()
+        await interaction.response.edit_message(embed=report_embed(st, interaction.guild))
+        try:
+            await interaction.followup.send(f"✅ Отмечено: {added}", ephemeral=True)
+        except Exception:
+            pass
+
+    @discord.ui.button(label="🏁 Завершить сейчас", style=discord.ButtonStyle.danger, custom_id="report_finish")
+    async def finish(self, interaction, button):
+        mid = str(interaction.message.id)
+        st = _data.setdefault("reports", {}).get(mid)
+        if not st or st.get("ended"):
+            await interaction.response.send_message("Отчёт уже закрыт.", ephemeral=True); return
+        if not _can_report(interaction.user, interaction.guild):
+            await interaction.response.send_message("⛔ Недоступно.", ephemeral=True); return
+        await interaction.response.send_message("🏁 Подвожу итоги отчёта…", ephemeral=True)
+        await _finish_report(mid)
+
+    @discord.ui.button(label="🧵 Ветка отчётов", style=discord.ButtonStyle.secondary, custom_id="report_thread")
+    async def thread(self, interaction, button):
+        mid = str(interaction.message.id)
+        st = _data.setdefault("reports", {}).get(mid)
+        if not st or not st.get("thread_id"):
+            await interaction.response.send_message("Ветка не найдена.", ephemeral=True); return
+        await interaction.response.send_message(f"🧵 <#{st['thread_id']}>", ephemeral=True)
+
+
+@tasks.loop(seconds=30)
+async def report_loop():
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    for mid, st in list(_data.get("reports", {}).items()):
+        if not st.get("ended") and now >= st.get("end_ts", 0):
+            await _finish_report(mid)
+
+
+@report_loop.before_loop
+async def _before_report():
+    await bot.wait_until_ready()
+
+
+@bot.tree.command(name="отчет", description="Создать отчёт по контенту (Main Blaine+)")
+@app_commands.describe(название="Название контента")
+async def report_cmd(interaction: discord.Interaction, название: str):
+    if not _can_report(interaction.user, interaction.guild):
+        await interaction.response.send_message("⛔ Только Main Blaine и выше.", ephemeral=True); return
+    targets = _report_targets(interaction.guild)
+    if not targets:
+        await interaction.response.send_message(
+            "⚠️ Не нашёл участников с ролью Extendo Family Blaine.", ephemeral=True); return
+    end_ts = datetime.datetime.now(datetime.timezone.utc).timestamp() + REPORT_DURATION
+    st = {"title": название, "channel_id": interaction.channel_id, "thread_id": None,
+          "host_id": interaction.user.id, "end_ts": end_ts, "ended": False,
+          "targets": targets, "submitted": [], "msg_id": None}
+    await interaction.response.send_message("Создаю отчёт…", ephemeral=True)
+    msg = await interaction.channel.send(content="@here 📋 **Сбор отчётов!**",
+                                         embed=report_embed(st, interaction.guild), view=ReportView(),
+                                         allowed_mentions=discord.AllowedMentions(everyone=True))
+    st["msg_id"] = msg.id
+    try:
+        th = await msg.create_thread(name=f"Отчёты — {название[:50]}")
+        st["thread_id"] = th.id
+        await th.send("📸 Кидайте сюда скрины отчётов. Main отметит отправивших.")
+    except Exception:
+        pass
+    _data.setdefault("reports", {})[str(msg.id)] = st
+    save_data()
+    try:    # обновим эмбед со ссылкой на ветку
+        await msg.edit(embed=report_embed(st, interaction.guild))
+    except Exception:
+        pass
+
+
+# ============================================================================
+#  ===== ЗАЯВКИ НА АФК (/афк_панель) =====
+# ============================================================================
+def _parse_afk(s):
+    """'3d', '7д', '1w', '2 недели', '12h' -> секунды. Голое число = дни."""
+    s = s.lower().strip().replace(" ", "")
+    s = s.replace("недель", "w").replace("неделя", "w").replace("недели", "w").replace("нед", "w")
+    s = s.replace("дней", "d").replace("дня", "d").replace("день", "d").replace("дн", "d").replace("д", "d")
+    s = s.replace("часов", "h").replace("часа", "h").replace("час", "h").replace("ч", "h")
+    total = 0
+    for num, unit in _re2.findall(r"(\d+)\s*([wdh])", s):
+        total += int(num) * {"w": 604800, "d": 86400, "h": 3600}[unit]
+    if total == 0 and s.isdigit():
+        total = int(s) * 86400     # просто число = дни
+    return total
+
+
+class AfkModal(discord.ui.Modal, title="Заявка на АФК"):
+    def __init__(self):
+        super().__init__()
+        self.srok = discord.ui.TextInput(label="Срок АФК (напр. 3d, 1w, 12h)", max_length=30)
+        self.prichina = discord.ui.TextInput(label="Причина", style=discord.TextStyle.paragraph, max_length=400)
+        self.add_item(self.srok)
+        self.add_item(self.prichina)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        secs = _parse_afk(self.srok.value)
+        if not secs:
+            await interaction.response.send_message(
+                "⚠️ Не понял срок. Примеры: `3d`, `1w`, `12h`, `5 дней`.", ephemeral=True); return
+        import datetime as _dt
+        until_ts = _dt.datetime.now(_dt.timezone.utc).timestamp() + secs
+        emb = discord.Embed(title="🌙 Заявка на АФК", color=0xF1C40F)
+        emb.description = (f"👤 {interaction.user.mention}\n"
+                           f"⏳ Срок: **{self.srok.value}**  (до <t:{int(until_ts)}:f>)\n"
+                           f"📝 Причина: {self.prichina.value}")
+        emb.set_footer(text="Ожидает одобрения Main Blaine+")
+        ping = " ".join(f"<@&{rid}>" for rid in REPORT_CREATE_ROLE_IDS)
+        msg = await interaction.channel.send(content=ping, embed=emb, view=AfkDecisionView(),
+                                             allowed_mentions=discord.AllowedMentions(roles=True))
+        _data.setdefault("afk_pending", {})[str(msg.id)] = {
+            "uid": interaction.user.id, "secs": secs, "reason": self.prichina.value,
+            "srok": self.srok.value, "channel_id": interaction.channel_id}
+        save_data()
+        await interaction.response.send_message("✅ Заявка отправлена, жди одобрения.", ephemeral=True)
+
+
+class AfkPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="🌙 Подать заявку на АФК", style=discord.ButtonStyle.primary, custom_id="afk_request")
+    async def request(self, interaction, button):
+        await interaction.response.send_modal(AfkModal())
+
+
+class AfkDecisionView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="✅ Одобрить", style=discord.ButtonStyle.success, custom_id="afk_approve")
+    async def approve(self, interaction, button):
+        mid = str(interaction.message.id)
+        req = _data.setdefault("afk_pending", {}).get(mid)
+        if not req:
+            await interaction.response.send_message("Заявка уже обработана.", ephemeral=True); return
+        if not _can_report(interaction.user, interaction.guild):
+            await interaction.response.send_message("⛔ Одобрять может Main Blaine и выше.", ephemeral=True); return
+        import datetime as _dt
+        until_ts = _dt.datetime.now(_dt.timezone.utc).timestamp() + req["secs"]
+        _data.setdefault("afk", {})[str(req["uid"])] = {
+            "until_ts": until_ts, "reason": req.get("reason", ""), "by": interaction.user.id}
+        _data["afk_pending"].pop(mid, None)
+        save_data()
+        emb = interaction.message.embeds[0]
+        emb.color = 0x2ECC71
+        emb.title = "🌙 АФК ОДОБРЕН"
+        emb.add_field(name="✅ Одобрил", value=f"{interaction.user.mention} · до <t:{int(until_ts)}:f>", inline=False)
+        await interaction.response.edit_message(embed=emb, view=None)
+        try:
+            u_obj = interaction.guild.get_member(req["uid"])
+            if u_obj:
+                await u_obj.send(f"🌙 Твоя заявка на АФК одобрена до <t:{int(until_ts)}:f>. "
+                                 f"В списках на отчёт тебя не будет.")
+        except Exception:
+            pass
+
+    @discord.ui.button(label="❌ Отклонить", style=discord.ButtonStyle.danger, custom_id="afk_decline")
+    async def decline(self, interaction, button):
+        mid = str(interaction.message.id)
+        req = _data.setdefault("afk_pending", {}).get(mid)
+        if not req:
+            await interaction.response.send_message("Заявка уже обработана.", ephemeral=True); return
+        if not _can_report(interaction.user, interaction.guild):
+            await interaction.response.send_message("⛔ Недоступно.", ephemeral=True); return
+        _data["afk_pending"].pop(mid, None)
+        save_data()
+        emb = interaction.message.embeds[0]
+        emb.color = 0xE74C3C
+        emb.title = "🌙 АФК ОТКЛОНЁН"
+        emb.add_field(name="❌ Отклонил", value=interaction.user.mention, inline=False)
+        await interaction.response.edit_message(embed=emb, view=None)
+
+
+@bot.tree.command(name="афк_панель", description="Выложить панель заявок на АФК (Main Blaine+)")
+async def afk_panel_cmd(interaction: discord.Interaction):
+    if not _can_report(interaction.user, interaction.guild):
+        await interaction.response.send_message("⛔ Только Main Blaine и выше.", ephemeral=True); return
+    emb = discord.Embed(title="🌙 ЗАЯВКА НА АФК", color=EMBED_COLOR,
+                        description=("Уходишь в АФК? Нажми кнопку и укажи **срок** и **причину**.\n"
+                                     "После одобрения Main тебя **не будет в списках на отчёт**."))
+    if THUMBNAIL_URL.startswith("http"):
+        emb.set_thumbnail(url=THUMBNAIL_URL)
+    emb.set_footer(text=FOOTER_TEXT, icon_url=THUMBNAIL_URL if THUMBNAIL_URL.startswith("http") else None)
+    await interaction.channel.send(embed=emb, view=AfkPanelView())
+    await interaction.response.send_message("✅ Панель АФК выложена.", ephemeral=True)
+
+
+@bot.tree.command(name="афк_снять", description="Досрочно снять АФК с участника (Main Blaine+)")
+@app_commands.describe(участник="С кого снять АФК")
+async def afk_remove_cmd(interaction: discord.Interaction, участник: discord.Member):
+    if not _can_report(interaction.user, interaction.guild):
+        await interaction.response.send_message("⛔ Недоступно.", ephemeral=True); return
+    if _data.get("afk", {}).pop(str(участник.id), None):
+        save_data()
+        await interaction.response.send_message(f"✅ АФК снят с {участник.mention}.", ephemeral=True)
+    else:
+        await interaction.response.send_message("У этого участника нет активного АФК.", ephemeral=True)
+
+
 # ============================================================================
 #  ===== АНТИСНОС / АНТИСЛИВ (защита сервера) =====
 # ============================================================================
@@ -3285,6 +3640,8 @@ async def on_ready():
         honor_loop.start()
     if not giveaway_loop.is_running():
         giveaway_loop.start()
+    if not report_loop.is_running():
+        report_loop.start()
     # МГНОВЕННАЯ регистрация команд во все серверы, где есть бот
     try:
         for g in bot.guilds:
@@ -3296,7 +3653,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v34 (без Academy — только Family, фикс двойного начисления) === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v37 (АФК-заявки + умный онлайн-статус в отчётах) === запущен как {bot.user}", flush=True)
 
 
 load_data()
