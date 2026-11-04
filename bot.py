@@ -3620,6 +3620,105 @@ async def antinuke_wl_cmd(interaction: discord.Interaction, участник: di
         await interaction.response.send_message(f"✅ {участник.mention} добавлен в белый список.", ephemeral=True)
 
 
+# ============================================================================
+#  ===== РОСПУСК СОСТАВА -> «Друзья Экстендо» (/друзья_всем) =====
+# ============================================================================
+BOSS_USER_IDS = [1096846888537432244]      # Marsel — доступ к роспуску состава
+DISBAND_SOURCE_ROLE_IDS = [
+    1524756881472622674,   # Extendo Family Chilliad
+    1562892249883345026,   # Extendo Family Blaine
+    1512956758719467591,   # VZP Chilliad
+]
+FRIENDS_ROLE_NAME = "Друзья Экстендо"
+
+
+def _can_disband(member, guild):
+    return member.id == guild.owner_id or member.id in BOSS_USER_IDS
+
+
+def _disband_sources(guild):
+    ids = list(DISBAND_SOURCE_ROLE_IDS)
+    vzp_b = _data.get("cfg", {}).get("vzp_blaine_role")
+    if vzp_b:
+        ids.append(vzp_b)          # VZP Blaine (создаётся командой)
+    roles = []
+    for i in ids:
+        r = guild.get_role(i)
+        if r:
+            roles.append(r)
+    return roles
+
+
+def _find_friends_role(guild):
+    r = discord.utils.get(guild.roles, name=FRIENDS_ROLE_NAME)
+    if r:
+        return r
+    for role in guild.roles:
+        n = role.name.lower()
+        if "друзья" in n and ("экстендо" in n or "extendo" in n):
+            return role
+    return None
+
+
+class DisbandConfirmView(discord.ui.View):
+    def __init__(self, author_id):
+        super().__init__(timeout=60)
+        self.author_id = author_id
+
+    @discord.ui.button(label="⚠️ ДА, РАСПУСТИТЬ ВЕСЬ СОСТАВ", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction, button):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("⛔ Это не твоё подтверждение.", ephemeral=True); return
+        guild = interaction.guild
+        friends = _find_friends_role(guild)
+        srcs = _disband_sources(guild)
+        if not friends or not srcs:
+            await interaction.response.edit_message(content="⚠️ Роль «Друзья Экстендо» или роли состава не найдены.", view=None); return
+        await interaction.response.edit_message(content="⏳ Распускаю состав… это может занять минуту.", view=None)
+        members = {}
+        for r in srcs:
+            for m in r.members:
+                members[m.id] = m
+        done, fails = 0, 0
+        for m in members.values():
+            try:
+                to_remove = [r for r in srcs if r in m.roles]
+                if to_remove:
+                    await m.remove_roles(*to_remove, reason="Роспуск состава -> Друзья Экстендо")
+                if friends not in m.roles:
+                    await m.add_roles(friends, reason="Друзья Экстендо")
+                done += 1
+            except Exception:
+                fails += 1
+        txt = (f"✅ Готово!\nПереведено в **{friends.name}**: **{done}**\n"
+               f"Сняты роли: {', '.join(r.name for r in srcs)}")
+        if fails:
+            txt += f"\n⚠️ Не удалось у {fails} (роль бота должна быть ВЫШЕ этих ролей)."
+        try:
+            await interaction.followup.send(txt, ephemeral=True)
+        except Exception:
+            pass
+
+
+@bot.tree.command(name="друзья_всем", description="Снять роли состава и выдать «Друзья Экстендо» (только владелец/ты)")
+async def disband_cmd(interaction: discord.Interaction):
+    if not _can_disband(interaction.user, interaction.guild):
+        await interaction.response.send_message("⛔ Команда доступна только владельцу.", ephemeral=True); return
+    friends = _find_friends_role(interaction.guild)
+    if not friends:
+        await interaction.response.send_message(
+            f"⚠️ Не нашёл роль **{FRIENDS_ROLE_NAME}**. Создай её на сервере и повтори.", ephemeral=True); return
+    srcs = _disband_sources(interaction.guild)
+    if not srcs:
+        await interaction.response.send_message("⚠️ Роли состава не найдены.", ephemeral=True); return
+    affected = len({m.id for r in srcs for m in r.members})
+    await interaction.response.send_message(
+        f"⚠️ **Внимание!** Будут сняты роли (**{', '.join(r.name for r in srcs)}**) "
+        f"у **{affected}** участников, и всем выдана роль **{friends.name}**.\n\n"
+        f"Это действие необратимо. Подтверди:",
+        view=DisbandConfirmView(interaction.user.id), ephemeral=True)
+
+
 @bot.event
 async def on_ready():
     if not voice_earn_loop.is_running():
@@ -3653,7 +3752,7 @@ async def on_ready():
         await bot.tree.sync()
     except Exception as e:
         print(f"[SYNC] ошибка: {e}", flush=True)
-    print(f"=== EXTENDO BOT v37 (АФК-заявки + умный онлайн-статус в отчётах) === запущен как {bot.user}", flush=True)
+    print(f"=== EXTENDO BOT v39 (роспуск состава, доступ Marsel + владелец) === запущен как {bot.user}", flush=True)
 
 
 load_data()
